@@ -1,0 +1,312 @@
+{
+  "name": "monitoring-zabbix-sync",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://your-zabbix-server.example.com:8080/api_jsonrpc.php",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json-rpc"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n    \"jsonrpc\": \"2.0\",\n    \"method\": \"trigger.get\",\n    \"params\": {\n        \"output\": [\"triggerid\", \"description\", \"priority\", \"lastchange\"],\n        \"selectHosts\": [\"hostid\", \"name\"],\n        \"selectGroups\": [\"name\"],\n        \"selectTags\": \"extend\",\n        \"only_true\": true,\n        \"monitored\": true,\n        \"recent\": true,\n        \"sortfield\": \"lastchange\",\n        \"sortorder\": \"DESC\",\n        \"limit\": 50\n    },\n    \"id\": 1\n}",
+        "options": {
+          "allowUnauthorizedCerts": true,
+          "timeout": 15000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1296,
+        -80
+      ],
+      "id": "a5c7037a-d5ed-46f4-8512-b59d605d191c",
+      "name": "Incidencias",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "zabbix-api-token",
+          "name": "zabbix-api-token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        1120,
+        -80
+      ],
+      "id": "c9cd2fd6-7595-414c-a29c-deed0be282b3",
+      "name": "Temporizador"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "result",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        1472,
+        -80
+      ],
+      "id": "0473954a-9c12-4cbe-8adb-f23c5815f328",
+      "name": "Divisor JSON"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "0d24c6db-f65c-4c6b-a163-2246415fe588",
+              "name": "triggerid",
+              "value": "={{ $json.triggerid }}",
+              "type": "string"
+            },
+            {
+              "id": "d1ccf85f-2796-4582-ae2d-3707c8c68070",
+              "name": "host_name",
+              "value": "={{ $json.hosts[0].name }}",
+              "type": "string"
+            },
+            {
+              "id": "efe0fd7f-3a2e-46a6-ba70-acfcc3f917f6",
+              "name": "priority",
+              "value": "={{ $json.priority }}",
+              "type": "string"
+            },
+            {
+              "id": "e9c92571-9dba-41ad-a322-e577a45d754a",
+              "name": "description",
+              "value": "={{ $json.description }}",
+              "type": "string"
+            },
+            {
+              "id": "889aa443-e2f2-4ae3-a13a-c0a541d32f17",
+              "name": "lastchange",
+              "value": "={{ $json.lastchange }}",
+              "type": "string"
+            },
+            {
+              "id": "6a7808ac-56f8-413d-b4d4-e0d0ae67e553",
+              "name": "hostid",
+              "value": "={{ $json.hosts[0].hostid }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1648,
+        -80
+      ],
+      "id": "5dafa436-ed98-45f2-a51d-37d4f51c29c3",
+      "name": "Normalizar texto"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "zabbix_alerts",
+          "mode": "list",
+          "cachedResultName": "zabbix_alerts"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "eventid": "={{ $json.triggerid }}",
+            "host_name": "={{ $json.host_name }}",
+            "severity": "={{ $json.priority }}",
+            "clock": "={{ $json.lastchange }}",
+            "hostid": "={{ $json.hostid }}",
+            "event_name": "={{ $json.description }}",
+            "status": 1,
+            "last_reported": "={{ $now.toString() }}"
+          },
+          "matchingColumns": [
+            "eventid"
+          ],
+          "schema": [
+            {
+              "id": "eventid",
+              "displayName": "eventid",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "host_name",
+              "displayName": "host_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "last_reported",
+              "displayName": "last_reported",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "hostid",
+              "displayName": "hostid",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "event_name",
+              "displayName": "event_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "clock",
+              "displayName": "clock",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1824,
+        -80
+      ],
+      "id": "de31dcc7-655b-4235-839e-78cd35c30ef2",
+      "name": "Insert or update rows in a table",
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Incidencias": {
+      "main": [
+        [
+          {
+            "node": "Divisor JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Temporizador": {
+      "main": [
+        [
+          {
+            "node": "Incidencias",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Divisor JSON": {
+      "main": [
+        [
+          {
+            "node": "Normalizar texto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar texto": {
+      "main": [
+        [
+          {
+            "node": "Insert or update rows in a table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert or update rows in a table": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "settings": {
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "executionOrder": "v1",
+    "timezone": "America/Argentina/Buenos_Aires"
+  },
+  "pinData": {}
+}

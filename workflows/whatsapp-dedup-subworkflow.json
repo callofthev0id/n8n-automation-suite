@@ -1,0 +1,92 @@
+{
+  "name": "whatsapp-dedup-subworkflow",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "45d97bde-cb2f-4cf6-9d4f-7e347bb9b74d",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "={{ 'wa:dedup:' + ($json.message_id || 'nomsg') }}",
+        "value": "1",
+        "keyType": "string",
+        "expire": true,
+        "ttl": "={{ $json.ttl || 60 }}",
+        "options": {
+          "NX": true
+        }
+      },
+      "id": "dd2b76ac-edff-4ba4-92dd-d472235d2556",
+      "name": "Redis SET NX",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        464,
+        300
+      ],
+      "credentials": {
+        "redis": {
+          "id": "redis-main",
+          "name": "redis-main"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const out = $json;\nconst dup = (out === null) || (out && out.value === null);\nreturn [{ json: { duplicate: !!dup, message_id: $('When Executed by Another Workflow').first().json.message_id } }];\n"
+      },
+      "id": "6f23c12e-d0ee-448f-9395-9190dc349e7b",
+      "name": "Decidir duplicado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        688,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Redis SET NX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis SET NX": {
+      "main": [
+        [
+          {
+            "node": "Decidir duplicado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false,
+    "timezone": "America/Argentina/Buenos_Aires",
+    "errorWorkflow": "cOKm6iK55YtKvXIM"
+  },
+  "pinData": {}
+}

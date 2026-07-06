@@ -1,0 +1,279 @@
+{
+  "name": "ai-data-reconciliation",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ia-reconciliacion",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        80,
+        300
+      ],
+      "id": "4f10e102-590b-4a21-8421-16a697ec2eb9",
+      "name": "webhook_ia",
+      "webhookId": "ia-reconciliacion"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT i.report_data, i.nc AS nc, c.\"ocsGroup\" AS ocsgroup, c.\"esetEmail\" AS esetemail,\n  c.contrato_servidores, c.contrato_servidores_virt, c.contrato_estaciones\nFROM crm_cache.informes i JOIN crm_cache.clientes c ON c.\"nombreCorto\" = i.nc\nWHERE i.id = {{ Number($json.body.informeId) || 0 }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        300,
+        300
+      ],
+      "id": "ad967c12-688e-46d4-b6e4-2e8b8db200ea",
+      "name": "get_contexto",
+      "credentials": {
+        "postgres": {
+          "id": "postgres-crm",
+          "name": "postgres-crm"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT hostname, source, source_match, hardware_uuid, eset_uuid, mac, bios_serial, os\nFROM msp_cache.cache_inventario\nWHERE LOWER(REGEXP_REPLACE(workgroup, '\\.local$', '', 'i')) = LOWER(REGEXP_REPLACE('{{ String($('get_contexto').first().json.ocsgroup || '').replace(/'/g, \"''\") }}', '\\.local$', '', 'i'))\n   OR (workgroup = 'unknown-eset' AND LOWER(eset_email) = LOWER('{{ String($('get_contexto').first().json.esetemail || '').replace(/'/g, \"''\") }}'))",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        520,
+        300
+      ],
+      "id": "e2ab7351-8f88-48a1-a600-244fd5d2d075",
+      "name": "sql_inv_raw",
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows=$('sql_inv_raw').all().map(i=>i.json)\nconst ctx=$('get_contexto').first().json\nconst rd=ctx.report_data||{}\nlet mant={terminales:[],servidores:[]}\ntry{const mm=(rd.modules||{}).mantenimiento; if(mm){mant.terminales=(mm.terminales||[]).map(t=>t.hostname).filter(Boolean); mant.servidores=(mm.servidores||[]).map(s=>s.hostname).filter(Boolean)}}catch(_){}\nconst devices=rows.map(r=>({hostname:r.hostname,source:r.source,match:r.source_match,uuid:r.hardware_uuid||null,eset_uuid:r.eset_uuid||null,mac:r.mac||null,serial:r.bios_serial||null,os:r.os,server:/server/i.test(r.os||'')}))\nconst ci=v=>{const n=Number(v);return Number.isFinite(n)?n:0}\nconst contrato={servidores:ci(ctx.contrato_servidores)+ci(ctx.contrato_servidores_virt),estaciones:ci(ctx.contrato_estaciones)}\nconst datos=JSON.stringify({devices,mantenimiento:mant,contrato})\nconst INSTR=\"Sos experto en inventario de IT, analista del informe. Recib\\u00eds dispositivos de DOS consolas (OCS y ESET) ya pre-cruzados; un mismo equipo f\\u00edsico puede aparecer en VARIAS filas. Deduplic\\u00e1 a la lista REAL de m\\u00e1quinas f\\u00edsicas y detect\\u00e1 inconsistencias.\\n\\nReglas de identidad: misma m\\u00e1quina si comparten hardware_uuid (incluso con bytes invertidos por endianness, ej \\\"71FB9E65-418C-031A\\\"=\\\"659EFB71-8C41-1A03\\\"), o mismo bios_serial no-basura, o MACs adyacentes (\\u00faltimo byte \\u00b11) con mismo serial = 2 NICs del mismo equipo. IGNOR\\u00c1 uuids/seriales basura repetidos en m\\u00e1quinas distintas (ej \\\"03000200-0400-0500-0006-000700080009\\\", claves Windows \\\"VK7JG-...\\\"). hostname = se\\u00f1al d\\u00e9bil (puede haber 2 m\\u00e1quinas distintas con mismo hostname, ej SRV01 local y SRV01 nube). eset_uuid != hardware_uuid (no comparar). tipo \\\"servidor\\\" si OS contiene \\\"Server\\\". Compar\\u00e1 vs contrato (faltan/sobran). En \\\"inconsistencias\\\": duplicados mal cruzados, equipos en una sola consola, conteos que no cierran, hostnames colisionando.\"\nconst fullPrompt=INSTR+\"\\n\\nDatos (JSON):\\n\"+datos\nreturn [{json:{fullPrompt,_nDevices:devices.length,_contrato:contrato}}]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        300
+      ],
+      "id": "dfaaa343-ead3-462f-b4f5-ecd10694f37b",
+      "name": "prep_ai"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.fullPrompt }}",
+        "hasOutputParser": true
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        960,
+        300
+      ],
+      "id": "8433aab6-6870-475e-a70f-0b4fb1446c72",
+      "name": "recon_agent",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.0-flash",
+        "options": {
+          "maxOutputTokens": 4096,
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        900,
+        500
+      ],
+      "id": "f477586e-d7ba-4a6c-a2be-d4fcc7693a88",
+      "name": "recon_llm",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "google-gemini-api",
+          "name": "google-gemini-api"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\"type\": \"object\", \"properties\": {\"equipos\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {\"hostname\": {\"type\": \"string\"}, \"tipo\": {\"type\": \"string\"}, \"hostnames_origen\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}, \"fuentes\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}, \"confianza\": {\"type\": \"string\"}, \"revisar_manual\": {\"type\": \"boolean\"}, \"motivo\": {\"type\": \"string\"}}}}, \"resumen\": {\"type\": \"object\", \"properties\": {\"servidores\": {\"type\": \"number\"}, \"estaciones\": {\"type\": \"number\"}}}, \"reconciliacion\": {\"type\": \"object\", \"properties\": {\"contrato_servidores\": {\"type\": \"number\"}, \"contrato_estaciones\": {\"type\": \"number\"}, \"faltan_servidores\": {\"type\": \"number\"}, \"sobran_servidores\": {\"type\": \"number\"}, \"faltan_estaciones\": {\"type\": \"number\"}, \"sobran_estaciones\": {\"type\": \"number\"}}}, \"inconsistencias\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {\"tipo\": {\"type\": \"string\"}, \"descripcion\": {\"type\": \"string\"}, \"equipos\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}}}}, \"required\": [\"equipos\", \"resumen\"]}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        1080,
+        500
+      ],
+      "id": "5b1289e9-409d-44b8-995b-f6a5f5ced653",
+      "name": "recon_parser"
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx=$('get_contexto').first().json\nconst rd=ctx.report_data||{}\nlet ag=null; try{ag=$('recon_agent').first().json}catch(_){}\nconst ai=ag&&(ag.output||ag)\nlet nDev=0; try{nDev=$('prep_ai').first().json._nDevices||0}catch(_){}\nrd._aiDebug={nDevices:nDev,agentKeys:ag?Object.keys(ag):null,nEquipos:(ai&&ai.equipos&&ai.equipos.length)||0,raw:JSON.stringify(ag||null).slice(0,900)}\nif(ai&&Array.isArray(ai.equipos)&&ai.equipos.length>0){\n  rd.reconciliacionAi=ai\n  if(rd.kpis&&ai.resumen&&typeof ai.resumen.servidores==='number') rd.kpis.servidores=ai.resumen.servidores\n}\nconst modulos=(rd._meta&&rd._meta.modulos)||Object.keys(rd.modules||{})\nreturn [{json:{reportData:rd,nc:ctx.nc,informeId:Number($('webhook_ia').first().json.body.informeId)||0,modulos}}]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        300
+      ],
+      "id": "c71b4a3a-c28c-4b4d-942d-6460c5a0d69a",
+      "name": "merge_ai"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://your-report-server.example.com/api/informes/{{ $json.nc }}/{{ $json.informeId }}/report-data",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-n8n-secret",
+              "value": "CHANGE_ME_CALLBACK_SECRET"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ reportData: $json.reportData, estado: 'ok', modulos: $json.modulos }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1400,
+        300
+      ],
+      "id": "b4b3e4b2-b0ad-4042-91a6-b4cb79d180e4",
+      "name": "patch_informe"
+    }
+  ],
+  "connections": {
+    "webhook_ia": {
+      "main": [
+        [
+          {
+            "node": "get_contexto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_contexto": {
+      "main": [
+        [
+          {
+            "node": "sql_inv_raw",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "sql_inv_raw": {
+      "main": [
+        [
+          {
+            "node": "prep_ai",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prep_ai": {
+      "main": [
+        [
+          {
+            "node": "recon_agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "recon_agent": {
+      "main": [
+        [
+          {
+            "node": "merge_ai",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "recon_llm": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "recon_agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "recon_parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "recon_agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "merge_ai": {
+      "main": [
+        [
+          {
+            "node": "patch_informe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "cOKm6iK55YtKvXIM",
+    "timezone": "America/Argentina/Buenos_Aires",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "pinData": {}
+}

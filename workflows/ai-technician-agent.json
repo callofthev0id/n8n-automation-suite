@@ -1,0 +1,460 @@
+{
+  "name": "ai-technician-agent",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        208,
+        0
+      ],
+      "id": "bb1b6a3c-5779-42bf-811d-14239901df93",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.mensaje_texto }}",
+        "needsFallback": true,
+        "options": {
+          "systemMessage": "Sos un Operador Senior del NOC de un MSP (resolutivo, hablas de vos).\nHablas con: {{ $json.nombre_registrado || 'un companiero' }}.\nFecha/hora actual: {{ $now.format('DD/MM/YYYY HH:mm') }}.\n\nHERRAMIENTAS:\n- tool_sql_pg: PostgreSQL cache msp_cache (PREFERIDO para Tickets, FS, Proyectos, Empresas, Contactos).\n  Cache actualizado cada 3-15 min desde Vtiger. Mas rapido y no estresa el CRM.\n- tool_sql_analitica: MySQL vTiger DIRECTO. Usar solo si necesitas datos muy recientes (<3 min)\n  o tablas no disponibles en PG (relaciones complejas, campos custom raros).\n- tool_sql_zabbix: Alertas e infraestructura Zabbix (PostgreSQL).\n- tool_dominios: Dominios gestionados por el MSP.\n- tool_reporte_errores: Metricas errores n8n.\n\nCALCULO DE HORAS FS (CRITICO):\nSiempre usar hora_fin - hora_inicio, NO la columna horas (es redondeada).\nEn PG: ROUND(EXTRACT(EPOCH FROM (hora_fin::time - hora_inicio::time))/3600.0,2)\nEjemplo: 16:00 a 16:42 = 0.70 hs, NO 1 hora.\n\nSQL CRITICO MySQL (solo para tool_sql_analitica):\n  ticket_no (NO ticket_number) | accountname (NO account_name) | crm.createdtime (NO createdate)\n  cf_* estan en tabla *cf separada: scf.cf_960 (NO sc.cf_960)\n  sc.sc_related_to (NO sc.accountid) | CAST(p.linktoaccountscontacts AS UNSIGNED) (NO p.accountid)\n\nREGLA PRE-CONSULTA (OBLIGATORIO):\nAntes de queries amplias sin filtros: pedi empresa/tecnico/periodo. Avisa que puede demorar.\nEmpresa incompleta -> usa ILIKE '%nombre%' en PG o LIKE '%nombre%' en MySQL.\n\nFORMATO RESPUESTA — siempre JSON valido:\nReportes: {\"tipo\":\"tickets|proyectos|fs|alertas_zabbix|contactos|empresas|dominios\",\"fecha\":\"DD/MM/YYYY HH:mm\",\"datos\":[...filas exactas...],\"resumen\":\"texto breve (max 1 linea)\"}\nSimples: {\"tipo\":\"texto\",\"mensaje\":\"respuesta\"}\n\nCRITICO — datos[] para tipo fs:\n  - datos[] DEBE contener UNA FILA POR FS individual, sin agrupar ni agregar.\n  - Cada fila debe incluir: contract_no, tecnico, empresa, horas_real, hora_inicio, hora_fin, fecha.\n  - El formatter agrupa por tecnico y suma las horas automaticamente. NO lo hagas vos.\n  - NUNCA uses GROUP BY para tipo fs. Siempre SELECT de filas individuales.\n  - resumen = texto corto de 1 linea (ej: \"FS del 04/05/2026\"), NO el analisis completo.\n\nCRITICO — datos[] para tipo tickets:\n  - datos[] DEBE contener UNA FILA POR TICKET individual, sin agrupar.\n  - Cada fila debe incluir: ticket_no, title, empresa, tecnico_asignado, status, createdtime.\n\nCRITICO — datos[] para tipo proyectos:\n  - datos[] DEBE contener UNA FILA POR TAREA individual, sin agrupar.\n  - Si un proyecto tiene 5 tareas, datos[] debe tener 5 filas (una por tarea).\n  - Cada fila debe incluir: project_no, projectname, projectstatus, empresa, tecnico_asignado, projecttaskid, projecttaskname, projecttaskstatus, task_order.\n  - El formatter agrupa por proyecto y lista las tareas automaticamente. NO lo hagas vos.\n  - NUNCA uses GROUP BY, DISTINCT ON, ni string_agg para tipo proyectos.\n  - SQL correcto: SELECT project_no, projectname, projectstatus, empresa, tecnico_asignado, projecttaskid, projecttaskname, projecttaskstatus, task_order FROM msp_cache.cache_proyectos WHERE ...\n\nREGLA — MENSAJES OFF-TOPIC / SALUDOS / CHARLA CASUAL:\nSi el usuario manda un saludo (hola, buenas, qué tal), un agradecimiento, una pregunta no técnica, o algo que no es una consulta operativa concreta:\n  → Respondé breve y amable (1-2 líneas)\n  → Cerrá sugiriendo: \"Escribí `/menu` para ver las consultas disponibles.\"\n  → Formato JSON: {\"tipo\":\"texto\",\"mensaje\":\"<tu respuesta breve + sugerencia>\"}\n  → NO uses tools. NO inventes datos. NO pidas más info.\n",
+          "maxIterations": 10
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        384,
+        0
+      ],
+      "id": "48279856-8995-421a-9bf6-e5b1417dad92",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://evolution-api:8080/message/sendText/ChatBot-MSP",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $('When Executed by Another Workflow').first().json.numero_origen, text: $json.output }) }}",
+        "options": {
+          "timeout": 15000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        912,
+        0
+      ],
+      "id": "d39c19b5-cd2c-4f44-b0eb-02abaf0a0e75",
+      "name": "HTTP Request",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "whatsapp-api-token",
+          "name": "whatsapp-api-token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "name": "tool_dominios",
+        "description": "PostgreSQL cache_dominios. Campos: dominio, cliente, fecha_vencimiento, dias_restantes, registrar.\nParams: filtro (nombre/cliente), fecha_desde (YYYY-MM-DD), fecha_hasta (YYYY-MM-DD). Vacío=sin filtro.\nCálculo fechas: 'vencidos 2026'→desde=2026-01-01,hasta=hoy | 'próx30d'→desde=hoy,hasta=hoy+30d | 'este mes'→1er y último día del mes actual",
+        "workflowId": {
+          "__rl": true,
+          "value": "aBKbqIVHLZlpucS6",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "filtro": "={{ $fromAI('filtro',      'Filtro por nombre de dominio o cliente. Dejar vacío si no se busca uno específico.') }}",
+            "fecha_desde": "={{ $fromAI('fecha_desde', 'Fecha inicio rango vencimiento YYYY-MM-DD. Vacío = sin límite.') }}",
+            "fecha_hasta": "={{ $fromAI('fecha_hasta', 'Fecha fin rango vencimiento YYYY-MM-DD. Vacío = sin límite.') }}"
+          },
+          "matchingColumns": [
+            "filtro",
+            "fecha_desde",
+            "fecha_hasta"
+          ],
+          "schema": [
+            {
+              "id": "filtro",
+              "displayName": "filtro",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "fecha_desde",
+              "displayName": "fecha_desde",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "fecha_hasta",
+              "displayName": "fecha_hasta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        640,
+        480
+      ],
+      "id": "8fdee285-16ef-4688-8418-4e0b1abd9de0",
+      "name": "Monitor dominios"
+    },
+    {
+      "parameters": {
+        "description": "PostgreSQL Zabbix. Alertas e infraestructura.\nJOIN: zabbix_alerts za JOIN zabbix_inventory zi ON za.host_name=zi.host_name\nFiltro empresa: zi.empresa_grupo ILIKE '%nombre%'\nSeverity: 5=DESASTRE 4=ALTO 3=MEDIO. Status: 1=Activo 0=Resuelto.\nDefault: clock >= EXTRACT(EPOCH FROM NOW()-INTERVAL '24 hours')",
+        "workflowId": {
+          "__rl": true,
+          "value": "YgFeGs0opYk9z5U8",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/YgFeGs0opYk9z5U8",
+          "cachedResultName": "tool_sql_zabbix"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "query": "={{ $fromAI('query', 'SQL query to run against PostgreSQL Zabbix database') }}"
+          },
+          "matchingColumns": [
+            "query"
+          ],
+          "schema": [
+            {
+              "id": "query",
+              "displayName": "query",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        640,
+        336
+      ],
+      "id": "e3ea961d-86da-41e6-9828-55e73fcb5f0d",
+      "name": "Call 'tool_sql_zabbix'"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.0-flash",
+        "options": {
+          "maxOutputTokens": 2048,
+          "temperature": 1,
+          "topK": 20
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        432,
+        464
+      ],
+      "id": "ee25aad0-b2b6-4269-b9b9-f5aa9cd4d956",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "google-gemini-api",
+          "name": "google-gemini-api"
+        }
+      }
+    },
+    {
+      "id": "060acc74-9633-46bb-988e-16cd44f12d4b",
+      "name": "Redis Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryRedisChat",
+      "typeVersion": 1.3,
+      "position": [
+        480,
+        176
+      ],
+      "parameters": {
+        "sessionKey": "={{ $('When Executed by Another Workflow').first().json.numero_origen }}",
+        "sessionTTL": 86400,
+        "contextWindowLength": 10,
+        "sessionIdType": "customKey"
+      },
+      "credentials": {
+        "redis": {
+          "id": "redis-main",
+          "name": "redis-main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Formatter v3: tickets, proyectos, fs, alertas_zabbix, contactos, empresas, dominios\nconst raw = $json.output || '';\nlet data;\ntry {\n  const match = raw.match(/\\{[\\s\\S]*\\}/);\n  if (!match) return [{ json: { output: raw } }];\n  data = JSON.parse(match[0]);\n} catch(e) {\n  return [{ json: { output: raw } }];\n}\n\nif (!data.tipo || data.tipo === 'texto') {\n  return [{ json: { output: data.mensaje || data.resumen || raw } }];\n}\n\n// Getter flexible: prueba multiples nombres, retorna el primero con valor real\nfunction g(obj, ...names) {\n  for (const n of names) {\n    const v = obj[n];\n    if (v !== undefined && v !== null && String(v).trim() !== '' && String(v).trim() !== '-') return v;\n  }\n  return '';\n}\n\nconst SEP = '\\n\\u2796\\u2796\\u2796\\u2796\\u2796\\n';\nconst fecha = data.fecha || new Date().toLocaleDateString('es-AR', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});\nconst rows = data.datos || [];\nlet out = '';\n\n// ─── TICKETS ──────────────────────────────────────────────────────────────\nif (data.tipo === 'tickets') {\n  const ticketMap = new Map();\n  for (const r of rows) {\n    const rawId = g(r, 'ticket_no', 'ticketno', 'ticket_number');\n    const tid = rawId || ('TT-' + (r.ticketid || r.id || '?'));\n    if (!ticketMap.has(tid)) {\n      ticketMap.set(tid, {\n        ticket_no: tid,\n        title: g(r, 'title', 'ticket_title', 'subject', 'titulo'),\n        empresa: g(r, 'empresa', 'accountname', 'account_name', 'cliente'),\n        tecnico: g(r, 'tecnico', 'responsable', 'tecnico_asignado', 'assigned_user'),\n        status: g(r, 'status', 'ticketstatus', 'estado'),\n        descripcion: g(r, 'descripcion', 'description', 'comments'),\n        fs: []\n      });\n    }\n    const fsNo = g(r, 'contract_no', 'fs_no', 'fs_contract_no');\n    const fsId = g(r, 'fieldserviceid', 'fs_id', 'fsid');\n    const fsKey = fsNo || fsId;\n    if (fsKey) {\n      const ticket = ticketMap.get(tid);\n      const already = ticket.fs.some(f => (f.contract_no || f.fsid) === fsKey);\n      if (!already) {\n        ticket.fs.push({\n          contract_no: fsNo || fsId,\n          subject: g(r, 'fs_subject', 'fs_title', 'fs_descripcion', 'fs_name'),\n          horas: g(r, 'horas', 'fs_horas', 'tiempo_horas', 'resolution_hours', 'cf_930'),\n          tecnico: g(r, 'fs_tecnico', 'tecnico_fs')\n        });\n      }\n    }\n  }\n  out = '\\ud83d\\udcc5 *Tickets \\u2014 ' + fecha + '*\\n\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501';\n  if (!ticketMap.size) { out += '\\nSin tickets en el per\\u00edodo.'; }\n  for (const t of ticketMap.values()) {\n    out += '\\n\\n\\ud83c\\udfab *' + t.ticket_no + '* \\u2014 ' + (t.title || 'Sin t\\u00edtulo');\n    out += '\\n\\ud83c\\udfe2 ' + (t.empresa || 'N/D') + ' | \\ud83d\\udc68\\u200d\\ud83d\\udcbb ' + (t.tecnico || 'S/D');\n    out += '\\n\\ud83d\\udccc ' + (t.status || '') + (t.descripcion ? ' | \\ud83d\\udcdd ' + String(t.descripcion).substring(0,80) : '');\n    if (t.fs.length > 0) {\n      out += '\\n  \\u21b3 FS:';\n      for (const f of t.fs) {\n        out += '\\n    \\u25aa\\ufe0f ' + (f.contract_no || '') + ': ' + (f.subject || '') + ' | \\u23f1\\ufe0f ' + (f.horas || 0) + 'h | \\ud83d\\udc64 ' + (f.tecnico || 'N/D');\n      }\n    } else {\n      out += '\\n  \\u21b3 Sin FS vinculados';\n    }\n    out += SEP;\n  }\n\n// ─── PROYECTOS ────────────────────────────────────────────────────────────\n} else if (data.tipo === 'proyectos') {\n  const projMap = new Map();\n  for (const r of rows) {\n    const rawPid = g(r, 'project_no', 'projectno', 'project_number');\n    const pid = rawPid || String(r.projectid || r.id || '?');\n    if (!projMap.has(pid)) {\n      projMap.set(pid, {\n        project_no: pid,\n        projectname: g(r, 'projectname', 'nombre', 'project_name', 'name'),\n        empresa: g(r, 'empresa', 'accountname', 'account_name', 'cliente'),\n        estado: g(r, 'projectstatus', 'estado', 'status'),\n        descripcion: g(r, 'descripcion', 'description'),\n        tareas: []\n      });\n    }\n    const taskId = g(r, 'projecttaskid', 'taskid', 'task_id');\n    const taskName = g(r, 'projecttaskname', 'taskname', 'task_name', 'tarea', 'nombre_tarea');\n    if (taskId || taskName) {\n      const proj = projMap.get(pid);\n      const dedupKey = taskId || taskName;\n      const already = proj.tareas.some(t => (t.projecttaskid || t.taskname) === dedupKey);\n      if (!already) {\n        proj.tareas.push({\n          projecttaskid: taskId,\n          taskname: taskName,\n          status: g(r, 'projecttaskstatus', 'task_status', 'taskstatus', 'estado_tarea'),\n          asignado: g(r, 'tecnico_asignado', 'tecnico', 'assigned_user', 'asignado'),\n          order: g(r, 'task_order', 'projecttasknumber', 'taskorder', 'orden')\n        });\n      }\n    }\n  }\n  out = '\\ud83d\\udcc5 *Proyectos \\u2014 ' + fecha + '*\\n\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501';\n  if (!projMap.size) { out += '\\nSin proyectos.'; }\n  for (const p of projMap.values()) {\n    out += '\\n\\n\\ud83d\\udcc1 *' + p.project_no + '* \\u2014 ' + (p.projectname || 'Sin nombre');\n    out += '\\n\\ud83c\\udfe2 ' + (p.empresa || 'N/D') + ' | \\ud83d\\udccc ' + (p.estado || '');\n    if (p.descripcion) out += '\\n\\ud83d\\udcdd ' + String(p.descripcion).substring(0,80);\n    if (p.tareas.length > 0) {\n      out += '\\n  \\u21b3 Tareas (' + p.tareas.length + '):';\n      for (const t of p.tareas) {\n        const si = (t.status||'').toLowerCase();\n        const icon = si.includes('progress') ? '\\u23f3' : si.includes('complet') ? '\\u2705' : '\\u25aa\\ufe0f';\n        out += '\\n    ' + icon + ' ' + (t.order ? '[' + t.order + '] ' : '') + (t.taskname || '') + ' | ' + (t.status || '') + ' | \\ud83d\\udc68\\u200d\\ud83d\\udcbb ' + (t.asignado || 'N/D');\n      }\n    } else {\n      out += '\\n  \\u21b3 Sin tareas registradas';\n    }\n    out += SEP;\n  }\n\n// ─── FS ───────────────────────────────────────────────────────────────────\n} else if (data.tipo === 'fs') {\n  // Agrupar por tecnico, ordenar, sumar horas reales (hora_fin - hora_inicio)\n  const byTec = {};\n  for (const f of rows) {\n    const tec = g(f,'tecnico','responsable','assigned_user') || 'Sin asignar';\n    if (!byTec[tec]) byTec[tec] = [];\n    byTec[tec].push(f);\n  }\n  const hFmt = h => {\n    const n = parseFloat(h) || 0;\n    if (n === 0) return '0';\n    const s = n.toFixed(2);\n    return parseFloat(s) % 1 === 0 ? String(Math.round(n)) : s.replace(/0+$/, '');\n  };\n  out = '📋 *Formularios de Servicio — ' + fecha + '*\\n━━━━━━━━━━━━━━';\n  if (!rows.length) { out += '\\nSin registros.'; }\n  let totalFS = 0, totalHoras = 0;\n  for (const tec of Object.keys(byTec).sort()) {\n    const fsList = byTec[tec];\n    let subH = 0;\n    out += '\\n\\n👤 *' + tec + '*';\n    for (const f of fsList) {\n      const h = parseFloat(g(f,'horas_real','horas','tiempo_horas','cf_930')) || 0;\n      subH += h; totalHoras += h; totalFS++;\n      const empresa = g(f,'empresa','accountname') || 'N/D';\n      const fsNo = g(f,'contract_no','fs_no','fieldserviceid') || '?';\n      const hIni = g(f,'hora_inicio','hora_inicio_real') || '';\n      const hFin = g(f,'hora_fin','hora_fin_real') || '';\n      const rango = (hIni && hFin) ? ' | ' + hIni.substring(0,5) + '→' + hFin.substring(0,5) : '';\n      out += '\\n  • ' + fsNo + ' | ' + hFmt(h) + ' hs | ' + empresa + rango;\n    }\n    out += '\\n  _Total: ' + hFmt(subH) + ' hs_';\n  }\n  if (rows.length) {\n    out += '\\n\\n📊 *' + totalFS + ' FS | ' + hFmt(totalHoras) + ' horas en total*';\n  }\n\n// ─── ALERTAS ZABBIX ───────────────────────────────────────────────────────\n} else if (data.tipo === 'alertas_zabbix') {\n  out = '\\ud83d\\udcc5 *Infraestructura \\u2014 ' + fecha + '*\\n\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501';\n  const p5 = rows.filter(i => i.severity == 5 || i.severity === 'DESASTRE');\n  const p4 = rows.filter(i => i.severity == 4 || i.severity === 'ALTO');\n  const otros = rows.filter(i => i.severity != 5 && i.severity != 4 && i.severity !== 'DESASTRE' && i.severity !== 'ALTO');\n  if (p5.length) {\n    out += '\\n\\n\\ud83d\\udd34 *DESASTRE:*';\n    for (const a of p5) out += '\\n\\u2022 ' + g(a,'empresa_grupo','empresa','accountname') + ' | ' + g(a,'host_name','hostname','name') + ' \\u2014 ' + g(a,'event_name','description','trigger_name') + (a.status==1?' \\u26a1':'');\n  }\n  if (p4.length) {\n    out += '\\n\\n\\ud83d\\udfe0 *ALTO:*';\n    for (const a of p4) out += '\\n\\u2022 ' + g(a,'empresa_grupo','empresa','accountname') + ' | ' + g(a,'host_name','hostname','name') + ' \\u2014 ' + g(a,'event_name','description','trigger_name') + (a.status==1?' \\u26a1':' \\u2714\\ufe0f');\n  }\n  if (otros.length) {\n    out += '\\n\\n\\ud83d\\udfe1 *MEDIO/INFO:*';\n    for (const a of otros) out += '\\n\\u2022 ' + g(a,'empresa_grupo','empresa','accountname') + ' | ' + g(a,'host_name','hostname','name') + ' \\u2014 ' + g(a,'event_name','description','trigger_name');\n  }\n  const activos = rows.filter(i => i.status == 1).length;\n  const resueltos = rows.filter(i => i.status == 0).length;\n  out += '\\n\\n\\ud83d\\udcca Total: ' + rows.length + ' | \\u26a1 Activos: ' + activos + ' | \\u2714\\ufe0f Resueltos: ' + resueltos;\n\n// ─── CONTACTOS ────────────────────────────────────────────────────────────\n} else if (data.tipo === 'contactos') {\n  out = '\\ud83d\\udcc5 *Contactos \\u2014 ' + fecha + '*\\n\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501';\n  for (const c of rows) {\n    out += '\\n\\n\\ud83d\\udc64 ' + g(c,'nombre','firstname','fullname','contactname','contact_name') + ' | \\ud83c\\udfe2 ' + g(c,'empresa','accountname','account_name');\n    out += '\\n\\ud83d\\udce7 ' + g(c,'email','mail') + ' | \\ud83d\\udcde ' + g(c,'telefono','phone','mobile');\n    out += SEP;\n  }\n\n// ─── EMPRESAS ────────────────────────────────────────────────────────────\n} else if (data.tipo === 'empresas') {\n  out = '\\ud83d\\udcc5 *Empresas \\u2014 ' + fecha + '*\\n\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501';\n  for (const e of rows) {\n    out += '\\n\\n\\ud83c\\udfe2 ' + g(e,'accountname','nombre','company','account_name');\n    out += '\\n\\ud83d\\udcde ' + (g(e,'telefono','phone','mobile') || 'N/D') + ' | \\ud83d\\udce7 ' + (g(e,'email','mail') || 'N/D');\n    const city = g(e,'ciudad','bill_city','city');\n    if (city) out += '\\n\\ud83d\\udccd ' + city;\n    out += SEP;\n  }\n\n// ─── DOMINIOS ────────────────────────────────────────────────────────────\n} else if (data.tipo === 'dominios') {\n  out = '\\ud83c\\udf10 *Dominios \\u2014 ' + fecha + '*\\n\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501';\n  if (!rows.length) { out += '\\nSin dominios en el per\\u00edodo.'; }\n  else {\n    const vencidos = rows.filter(d => parseInt(g(d,'dias_restantes','dias','days') || 0) < 0);\n    const proximos = rows.filter(d => { const n = parseInt(g(d,'dias_restantes','dias','days') || 999); return n >= 0 && n <= 30; });\n    const al_dia   = rows.filter(d => parseInt(g(d,'dias_restantes','dias','days') || 999) > 30);\n    if (vencidos.length) {\n      out += '\\n\\n\\ud83d\\udd34 *VENCIDOS (' + vencidos.length + '):*';\n      for (const d of vencidos) {\n        const dias = Math.abs(parseInt(g(d,'dias_restantes','dias','days') || 0));\n        const cli  = g(d,'cliente','client','accountname');\n        out += '\\n\\u2022 ' + g(d,'dominio','domain') + (cli ? ' | ' + cli : '') + ' | hace ' + dias + 'd | ' + (g(d,'registrar') || '');\n      }\n    }\n    if (proximos.length) {\n      out += '\\n\\n\\u26a0\\ufe0f *Vencen en \\u226430d (' + proximos.length + '):*';\n      for (const d of proximos) {\n        const dias = parseInt(g(d,'dias_restantes','dias','days') || 0);\n        const cli  = g(d,'cliente','client','accountname');\n        out += '\\n\\u2022 ' + g(d,'dominio','domain') + (cli ? ' | ' + cli : '') + ' | en ' + dias + 'd (' + g(d,'fecha_vencimiento','fecha','expiry') + ')';\n      }\n    }\n    if (al_dia.length) {\n      out += '\\n\\n\\u2705 *Al d\\u00eda (' + al_dia.length + '):*';\n      for (const d of al_dia) {\n        const dias = parseInt(g(d,'dias_restantes','dias','days') || 0);\n        const cli  = g(d,'cliente','client','accountname');\n        out += '\\n\\u2022 ' + g(d,'dominio','domain') + (cli ? ' | ' + cli : '') + ' | vence en ' + dias + 'd';\n      }\n    }\n  }\n\n} else {\n  return [{ json: { output: raw } }];\n}\n\nif (data.resumen) {\n  out += '\\n\\ud83d\\udcca *Resumen:* ' + data.resumen;\n}\n\nreturn [{ json: { output: out.trim() } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        704,
+        0
+      ],
+      "id": "b564324b-45b6-49f1-b5f8-6d1a69c16e30",
+      "name": "Formatter",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "description": "Reporte errores n8n. Param periodo: 24h|7d|30d (default 24h). Envía al grupo de errores.",
+        "workflowId": {
+          "__rl": true,
+          "value": "GqMz8NoocaqMAxgc",
+          "mode": "list",
+          "cachedResultName": "sub_reporte_errores"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "periodo": "={{ $fromAI('periodo', 'Periodo del reporte: 24h, 7d o 30d. Por defecto 24h.') }}"
+          },
+          "matchingColumns": [
+            "periodo"
+          ],
+          "schema": [
+            {
+              "id": "periodo",
+              "displayName": "periodo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        640,
+        624
+      ],
+      "id": "8ab91641-dda0-444e-9761-e86e71189e94",
+      "name": "tool_reporte_errores",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        384,
+        288
+      ],
+      "id": "7a1c0671-bf3f-4b84-9b79-8a9e6d66905d",
+      "name": "OpenRouter Chat Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "openrouter-api",
+          "name": "openrouter-api"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "description": "PostgreSQL msp_cache cache (actualizado cada 3-15 min desde Vtiger).\nUSAR PARA: Tickets, FS, Proyectos, Empresas, Contactos, OPs, Presupuestos, Dominios.\nSINTAXIS POSTGRESQL: ILIKE, EXTRACT, ::time, ::date, INTERVAL, ROUND.\n\n⚠️ CRÍTICO: usar nombres de columnas EXACTOS. Errores frecuentes:\n  - cache_empresas.accountid (NO account_id)\n  - cache_empresas.accountname (NO empresa, NO accountName)\n  - cache_fs.account_id (con underscore — DIFIERE de cache_empresas.accountid)\n  - cache_tickets.tecnico_asignado (no tecnico)\n  - cache_fs.tecnico (no tecnico_asignado)\n\n=== TABLAS Y COLUMNAS ===\n\nmsp_cache.cache_tickets  (tickets de soporte)\n  ticketid (int) | ticket_no | title | status | priority | category\n  empresa (text, denormalizada) | tecnico_asignado | contacto | cliente_asignado\n  account_id (int) | description | solution\n  createdtime | modifiedtime | closedtime | synced_at\n  deleted (BOOLEAN) ← ¡FILTRAR SIEMPRE WHERE deleted = false!\n  status valores reales: Open | In Progress | Wait For Response | Pendiente | Coordinado | Closed | Resuelto | Cerrado/Para Entregar\n  Filtro empresa: empresa ILIKE '%nombre%'   (es texto denormalizado, NO necesita JOIN)\n  Filtro tecnico: tecnico_asignado ILIKE '%nombre%'   o = (SELECT nombre FROM cache_tecnicos WHERE numero_whatsapp='X')\n\nmsp_cache.cache_tecnicos  (técnicos autorizados)\n  numero_whatsapp (text, PK) | nombre | email | rol | activo (bool) | es_grupo_permitido (bool)\n  USO: para resolver técnico desde whatsapp → SELECT nombre FROM cache_tecnicos WHERE numero_whatsapp = 'XXXXX'\n\nmsp_cache.cache_fs  (Formularios de Servicio)\n  fsid (int) | contract_no | subject | tecnico (text, nombre) | account_id (int)\n  fecha (DATE) | hora_inicio (text HH:MM:SS) | hora_fin (text HH:MM:SS)\n  horas (NUMERIC, manual, NO USAR para cálculos exactos)\n  tipo_soporte | tipo_servicio | facturable | tipo_uso | cantidad_tecnicos | viaje_ida_min | viaje_vuelta_min\n  createdtime | modifiedtime | synced_at\n  JOIN empresa: LEFT JOIN msp_cache.cache_empresas ce ON ce.accountid = cf.account_id\n  CALCULO HORAS_REAL (preferir sobre 'horas'):\n    CASE WHEN cf.hora_inicio<>'' AND cf.hora_fin<>''\n      THEN ROUND(EXTRACT(EPOCH FROM (cf.hora_fin::time - cf.hora_inicio::time))/3600.0, 2)\n      ELSE cf.horas END\n\nmsp_cache.cache_proyectos  (proyectos y sus tareas — denormalizado)\n  projectid (int) | project_no | projectname | projectstatus | projectpriority | projecttype | progress\n  empresa (text, denormalizada) | tecnico_asignado | account_id (int)\n  projecttaskid | projecttaskname | projecttaskstatus | task_order (int)\n  startdate | targetenddate | modifiedtime | synced_at\n  projectstatus valores: in progress | Sin iniciar | on hold | Validando | Completed | Cancelled\n  Filtro activos: projectstatus NOT IN ('Completed','Cancelled','Closed')\n  REGLA: una fila por TAREA (no agrupar)\n\nmsp_cache.cache_empresas  (catálogo de cuentas)\n  accountid (int, PK) | accountname | email1 | referente | tipo_contrato (Abonado/Eventual)\n  ⚠️ COLUMNA = 'accountid' (sin underscore)\n  Filtro: accountname ILIKE '%nombre%'\n\nmsp_cache.cache_clientes  (contactos)\n  contactid (int) | accountid (int) | firstname | lastname | email | phone | mobile\n\nmsp_cache.cache_ops  (oportunidades de venta)\n  opid | potential_no | potentialname | sales_stage | amount | closedate\n  account_id | tecnico | descripcion | createdtime | modifiedtime\n\nmsp_cache.cache_pres  (presupuestos)\n  preid | quote_no | subject | quotestage | total | validtill\n  account_id | tecnico | descripcion | createdtime | modifiedtime\n\nmsp_cache.cache_dominios  (dominios gestionados)\n  dominio (text, PK) | cliente | fecha_vencimiento (DATE) | registrar\n  notificado_30d/7d/1d (bool) | ultimo_check | check_status | extra (jsonb)\n\nmsp_cache.cache_entity_rel  (relaciones inter-módulos: TT<->FS, etc)\n  entity_id | entity_module | related_id | related_module\n\n=== EJEMPLOS VERIFICADOS ===\n\n-- Tickets pendientes del técnico que escribe:\nSELECT ticket_no, title, empresa, status, priority, createdtime\nFROM msp_cache.cache_tickets\nWHERE deleted = false\n  AND tecnico_asignado = (SELECT nombre FROM msp_cache.cache_tecnicos WHERE numero_whatsapp = 'XXXXX')\n  AND status IN ('Open','In Progress','Wait For Response','Pendiente','Coordinado')\nORDER BY createdtime DESC LIMIT 30\n\n-- FS del día con JOIN empresa (atención al nombre de las columnas join):\nSELECT cf.contract_no, cf.tecnico,\n  COALESCE(ce.accountname,'Sin empresa') AS empresa,\n  cf.fecha, cf.hora_inicio, cf.hora_fin,\n  CASE WHEN cf.hora_inicio<>'' AND cf.hora_fin<>''\n    THEN ROUND(EXTRACT(EPOCH FROM (cf.hora_fin::time - cf.hora_inicio::time))/3600.0, 2)\n    ELSE cf.horas END AS horas_real\nFROM msp_cache.cache_fs cf\nLEFT JOIN msp_cache.cache_empresas ce ON ce.accountid = cf.account_id\nWHERE cf.fecha = CURRENT_DATE\nORDER BY cf.tecnico, cf.hora_inicio\n\n-- Proyectos activos (una fila por tarea):\nSELECT project_no, projectname, projectstatus, empresa, tecnico_asignado,\n  projecttaskid, projecttaskname, projecttaskstatus, task_order\nFROM msp_cache.cache_proyectos\nWHERE projectstatus NOT IN ('Completed','Cancelled','Closed')\nORDER BY project_no, task_order LIMIT 100\n\n-- Dominios próximos a vencer:\nSELECT dominio, cliente, fecha_vencimiento, registrar,\n  (fecha_vencimiento - CURRENT_DATE) AS dias_restantes\nFROM msp_cache.cache_dominios\nWHERE fecha_vencimiento BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'\nORDER BY fecha_vencimiento ASC\n",
+        "workflowId": {
+          "__rl": true,
+          "value": "V4OxcMSnkACtMfNf",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "query_sql": "={{ $fromAI('query_sql') }}"
+          },
+          "matchingColumns": [
+            "query_sql"
+          ],
+          "schema": [
+            {
+              "id": "query_sql",
+              "displayName": "query_sql",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "1b607b9f-2338-4178-af5d-2669c158c665",
+      "name": "Call 'tool_sql_pg'",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        640,
+        192
+      ]
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Formatter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Monitor dominios": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call 'tool_sql_zabbix'": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formatter": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "tool_reporte_errores": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Call 'tool_sql_pg'": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "binaryMode": "separate",
+    "errorWorkflow": "cOKm6iK55YtKvXIM",
+    "availableInMCP": false,
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "timezone": "America/Argentina/Buenos_Aires"
+  },
+  "pinData": {}
+}

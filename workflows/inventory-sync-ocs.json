@@ -1,0 +1,93 @@
+{
+  "name": "inventory-sync-ocs",
+  "active": false,
+  "nodes": [
+    {
+      "id": "trigger_schedule",
+      "name": "Schedule Daily 03:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        200
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 3 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fetch_parse",
+      "name": "Fetch + Parse OCS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        290
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst OCS_BASE = 'https://your-ocs-server.example.com/ocsapi/v1';\nconst AUTH = 'Basic ' + Buffer.from('CHANGE_ME_USER:CHANGE_ME_PASSWORD').toString('base64');\n\n// ─── helpers ─────────────────────────────────────────────\nconst VIRTUAL_MAC_PREFIXES = ['00:09:0F','00:15:5D','00:50:56','00:0C:29','00:1C:42','52:54:00','08:00:27','00:00:00','FF:FF:FF'];\nconst GENERIC_SERIALS = ['to be filled by o.e.m.','to be filled by oem','default string','system serial number','not specified','not applicable','none','o.e.m.','oem','serial','0123456789','gigabyte technology co., ltd.','microsoft corporation','hpe','asus','asustek computer inc.','dell inc.','lenovo','hp'];\nfunction cleanSerial(s){if(!s)return'';s=String(s).trim();if(s.length<4)return'';const l=s.toLowerCase();for(const b of GENERIC_SERIALS)if(l.includes(b))return'';return s;}\nfunction isVirtualMac(m){if(!m)return true;const u=m.toUpperCase();return VIRTUAL_MAC_PREFIXES.some(p=>u.startsWith(p));}\nfunction pickMac(nets){const c=(nets||[]).filter(n=>n.MACADDR && !isVirtualMac(n.MACADDR));const up=c.find(n=>n.STATUS==='Up' && n.IPADDRESS && !n.IPADDRESS.startsWith('127'));if(up)return up.MACADDR.toUpperCase();const u=c.find(n=>n.STATUS==='Up');if(u)return u.MACADDR.toUpperCase();if(c.length)return c[0].MACADDR.toUpperCase();return null;}\nfunction pickIp(nets){const up=(nets||[]).find(n=>n.STATUS==='Up' && n.IPADDRESS && !n.IPADDRESS.startsWith('127'));if(up)return up.IPADDRESS;const a=(nets||[]).find(n=>n.IPADDRESS && !n.IPADDRESS.startsWith('127') && n.IPADDRESS!=='0.0.0.0');return a?a.IPADDRESS:null;}\nfunction pickSerial(b){if(!b||!b.length)return null;const x=b[0];return cleanSerial(x.SSN) || cleanSerial(x.MSN) || cleanSerial(x.ASSETTAG) || null;}\nfunction parseSmartTipo(s){if(!s)return null;const t=String(s).toUpperCase();if(t.includes('SSD')||t.includes('SOLID')||t.includes('NVME')||t.includes('M.2'))return'SSD';if(t.includes('RPM') && !t.includes('---'))return'HDD';if(t.includes('----'))return'SSD';return null;}\nfunction parseSmartEstado(s){if(!s)return null;return String(s).replace(/^[^:]+:\\s*/,'').trim();}\nfunction parseSmartHoras(s){if(!s)return null;const m=String(s).match(/(\\d+)/);return m?parseInt(m[1],10):null;}\nconst SSD_PATTERNS=[/\\bSSD\\b/i,/SOLID\\s*STATE/i,/\\bNVME\\b/i,/\\bM\\.?2\\b/i,/\\bWDS\\d/i,/\\bWD_BLACK\\s*SN/i,/\\bMZ-[VN]/i,/\\bMZ-?7/i,/\\b860\\s*EVO\\b/i,/\\b870\\s*EVO\\b/i,/\\b980\\b/i,/\\b990\\b/i,/\\b850\\s*PRO\\b/i,/\\bCT\\d+[MP]X/i,/\\bSA400\\b/i,/\\bKC\\d/i,/\\bSUV\\d/i,/\\bSSDPE/i,/\\bSSDSC/i,/\\bSN[0-9]{3,}/i,/\\bP[1-9]\\s*\\b/i,/\\bKINGSTON/i];\nconst HDD_PATTERNS=[/\\bWD[CRD]?\\s*WD\\b/i,/\\bST\\d{3,}/i,/\\bHGST/i,/\\bHITACHI/i,/\\bMAXTOR/i,/\\bBARRACUDA/i];\nfunction diskTypeFromModel(m){if(!m)return null;for(const p of SSD_PATTERNS)if(p.test(m))return'SSD';for(const p of HDD_PATTERNS)if(p.test(m))return'HDD';return null;}\nfunction kbStats(sw,now){now=now||new Date();let last=null,c30=0;const cut=now.getTime()-30*24*3600*1000;const isKb=s=>/\\bKB\\d{5,}/i.test(String(s.NAME||''));for(const s of (sw||[])){if(!isKb(s))continue;const dStr=s.INSTALLDATE;if(!dStr||dStr.startsWith('0000'))continue;const d=new Date(dStr);if(isNaN(d.getTime()))continue;if(!last||d>last)last=d;if(d.getTime()>=cut)c30++;}return{lastKb:last?last.toISOString():null,count30d:c30};}\nfunction isVirtualHost(b){if(!b||!b.length)return false;const x=b[0];const blob=`${x.BMANUFACTURER||''} ${x.SMANUFACTURER||''} ${x.SMODEL||''} ${x.MMANUFACTURER||''}`.toLowerCase();return['hyper-v','vmware','virtualbox','qemu','kvm','xen','virtual machine','parallels'].some(t=>blob.includes(t));}\nfunction parseUptime(u){if(!u)return null;if(Array.isArray(u) && u.length)u=u[0].DURATION;if(!u)return null;if(typeof u==='string'){const d=u.match(/(\\d+)\\s*d/i);if(d)return parseInt(d[1],10);}return null;}\n\nfunction parseComputer(c){\n  const hw=c.hardware||{};const cpus=c.cpus||[];const mems=c.memories||[];const nets=c.networks||[];\n  const stor=c.storages||[];const ai=c.accountinfo||[];const bios=c.bios||[];const drives=c.drives||[];\n  const smart=c.smartsti||[];const softs=c.softwares||[];\n  const ocs_id=parseInt(hw.ID||0,10);if(!ocs_id)return null;\n  const workgroup=((ai.find(a=>a.TAG)||{}).TAG||'').toString().toUpperCase();\n  const total_cores=cpus.reduce((s,cpu)=>s+Math.max(parseInt(cpu.CORES||0,10),parseInt(cpu.LOGICAL_CPUS||0,10),1),0);\n  const cpu_name=(cpus[0] && cpus[0].TYPE)||'';\n  const cpu_speed=cpus[0]?parseInt(cpus[0].SPEED||0,10):0;\n  const ram_mb=mems.reduce((s,m)=>s+parseInt(m.CAPACITY||0,10),0);\n  const ip=pickIp(nets);const mac=pickMac(nets);const bios_serial=pickSerial(bios);\n  const disks=stor.filter(s=>!String(s.TYPE||'').toLowerCase().includes('removable') && parseInt(s.DISKSIZE||0,10)>100)\n                  .sort((a,b)=>parseInt(b.DISKSIZE||0,10)-parseInt(a.DISKSIZE||0,10));\n  const primary=disks[0]||{};\n  const disk_gb=primary.DISKSIZE?Math.round(parseInt(primary.DISKSIZE,10)/1024):0;\n  const disk_model=`${primary.MODEL||''} ${primary.NAME||''} ${primary.DESCRIPTION||''}`.trim();\n  let disk_type=null;\n  if(smart.length)disk_type=parseSmartTipo(smart[0].TIPO);\n  if(!disk_type)disk_type=diskTypeFromModel(disk_model);\n  const disk_health=smart.length?parseSmartEstado(smart[0].ESTADO):null;\n  const disk_hours_on=smart.length?parseSmartHoras(smart[0].HORAS):null;\n  let disk_used_pct=null;\n  const cDrive=drives.find(d=>String(d.LETTER||'').toUpperCase().startsWith('C:'));\n  if(cDrive && cDrive.TOTAL && cDrive.FREE!=null){\n    const t=parseInt(cDrive.TOTAL,10),f=parseInt(cDrive.FREE,10);\n    if(t>0)disk_used_pct=Math.round(((t-f)/t)*100);\n  }\n  const kb=kbStats(softs);\n  const is_virtual=isVirtualHost(bios);\n  let last_contact=null;\n  if(hw.LASTDATE){try{const d=new Date(String(hw.LASTDATE).replace('T',' '));if(!isNaN(d.getTime()))last_contact=d.toISOString();}catch(_){}}\n  const uptime_days=parseUptime(c.uptime);\n  const hardware_uuid=String(hw.UUID||'').trim()||null;\n\n  // ─── arrays detalladas (JSONB) ─────────────────────────\n  // smart map: relacionar smart con disk por MODELO (mejor effort)\n  function smartForDisk(d){\n    if(!smart.length) return null;\n    const dModel = String(d.MODEL||'').toLowerCase();\n    const dName = String(d.NAME||'').toLowerCase();\n    const s = smart.find(sm => {\n      const m = String(sm.MODELO||'').toLowerCase();\n      return m && (dModel.includes(m) || m.includes(dModel) || dName.includes(m) || m.includes(dName));\n    }) || smart[0];\n    if(!s) return null;\n    const tempM = String(s.TEMPERATURA||'').match(/(\\d+)/);\n    return {\n      status: parseSmartEstado(s.ESTADO),\n      hours: parseSmartHoras(s.HORAS),\n      temperatureC: tempM ? parseInt(tempM[1],10) : null,\n    };\n  }\n  const disks_json = (stor||[])\n    .filter(s => parseInt(s.DISKSIZE||0,10) > 100)\n    .map(s => {\n      const m = `${s.MODEL||''} ${s.NAME||''} ${s.DESCRIPTION||''}`.trim();\n      let t = parseSmartTipo(s.TYPE);\n      if(!t) t = diskTypeFromModel(m);\n      return {\n        model: m || null,\n        name: s.NAME || null,\n        manufacturer: s.MANUFACTURER || null,\n        firmware: s.FIRMWARE || null,\n        serial: cleanSerial(s.SERIALNUMBER) || null,\n        type: t,\n        sizeMb: parseInt(s.DISKSIZE||0,10) || null,\n        smart: smartForDisk(s),\n      };\n    });\n\n  const memory_slots_json = (mems||[])\n    .filter(m => parseInt(m.CAPACITY||0,10) > 0)\n    .map(m => ({\n      slot: m.NUMSLOTS != null ? String(m.NUMSLOTS) : (m.CAPTION || null),\n      capacityMb: parseInt(m.CAPACITY||0,10) || null,\n      speed: m.SPEED || null,\n      type: m.TYPE || null,\n      caption: m.CAPTION || null,\n    }));\n\n  const networks_json = (nets||[])\n    .filter(n => n.MACADDR)\n    .map(n => ({\n      name: n.DESCRIPTION || null,\n      mac: String(n.MACADDR||'').toUpperCase(),\n      ip: n.IPADDRESS || null,\n      gateway: n.IPGATEWAY || null,\n      mask: n.IPMASK || null,\n      dhcp: n.DHCP || null,\n      speed: n.SPEED || null,\n      status: n.STATUS || null,\n      isVirtual: isVirtualMac(n.MACADDR),\n      type: n.TYPE || null,\n    }));\n\n  const drives_json = (drives||[])\n    .filter(d => d.LETTER && parseInt(d.TOTAL||0,10) > 0)\n    .map(d => {\n      const t = parseInt(d.TOTAL||0,10);\n      const f = parseInt(d.FREE||0,10);\n      return {\n        letter: d.LETTER,\n        totalMb: t || null,\n        freeMb: f || null,\n        usedPct: t > 0 ? Math.round(((t - f) / t) * 100) : null,\n        filesystem: d.FILESYSTEM || null,\n        volume: d.VOLUMN || null,\n        type: d.TYPE || null,\n      };\n    });\n\n  return {\n    ocs_id, workgroup, name:String(hw.NAME||''),\n    os:String(hw.OSNAME||''), os_version:String(hw.OSVERSION||''),\n    cpu:cpu_name, cpu_cores:total_cores, cpu_speed_mhz:cpu_speed, ram_mb,\n    disk_gb, disk_type, ip, mac, bios_serial,\n    last_contact, username:String(hw.LASTLOGGEDUSER || hw.USERID || ''),\n    disk_used_pct, disk_health, disk_hours_on,\n    last_kb_update:kb.lastKb, kb_count_30d:kb.count30d,\n    is_virtual, uptime_days, hardware_uuid,\n    disks_json: JSON.stringify(disks_json),\n    memory_slots_json: JSON.stringify(memory_slots_json),\n    networks_json: JSON.stringify(networks_json),\n    drives_json: JSON.stringify(drives_json),\n  };\n}\n\n// ─── fetch paginated ─────────────────────────────────────\nconst PAGE_SIZE = 100;\nlet allItems = [];\nlet start = 0;\nlet pageCount = 0;\nconst startedAt = Date.now();\n\nwhile (true) {\n  const url = `${OCS_BASE}/computers?start=${start}&limit=${PAGE_SIZE}`;\n  const resp = await this.helpers.httpRequest({\n    method: 'GET',\n    url,\n    headers: { Authorization: AUTH },\n    skipSslCertificateValidation: true,\n    json: true,\n    timeout: 60000,\n  });\n  if (!resp || typeof resp !== 'object') break;\n  const entries = Object.values(resp);\n  if (!entries.length) break;\n  for (const c of entries) {\n    const parsed = parseComputer(c);\n    if (parsed) allItems.push({ json: parsed });\n  }\n  pageCount++;\n  if (entries.length < PAGE_SIZE) break;\n  start += PAGE_SIZE;\n  if (pageCount > 100) break; // safety\n}\n\nreturn [{ json: { rows: allItems.map(i => i.json) } }];\n"
+      }
+    },
+    {
+      "id": "upsert_cache",
+      "name": "UPSERT cache_ocs_computers",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        800,
+        290
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO msp_cache.cache_ocs_computers (\n  ocs_id, workgroup, name, os, os_version, cpu, cpu_cores, cpu_speed_mhz,\n  ram_mb, disk_gb, disk_type, ip, mac, bios_serial, last_contact, username,\n  disk_used_pct, disk_health, disk_hours_on, last_kb_update, kb_count_30d,\n  is_virtual, uptime_days, hardware_uuid,\n  disks_json, memory_slots_json, networks_json, drives_json,\n  synced_at\n)\nSELECT\n  x.ocs_id, NULLIF(x.workgroup,''), NULLIF(x.name,''), NULLIF(x.os,''), NULLIF(x.os_version,''),\n  NULLIF(x.cpu,''), x.cpu_cores, x.cpu_speed_mhz,\n  x.ram_mb, x.disk_gb, NULLIF(x.disk_type,''),\n  CASE WHEN x.ip ~ '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$' THEN x.ip::inet ELSE NULL END,\n  NULLIF(x.mac,''), NULLIF(x.bios_serial,''),\n  CASE WHEN x.last_contact ~ '^[12][0-9]{3}-' THEN x.last_contact::timestamptz ELSE NULL END,\n  NULLIF(x.username,''),\n  x.disk_used_pct, NULLIF(x.disk_health,''), x.disk_hours_on,\n  CASE WHEN x.last_kb_update ~ '^[12][0-9]{3}-' THEN x.last_kb_update::timestamptz ELSE NULL END,\n  x.kb_count_30d, x.is_virtual, x.uptime_days, NULLIF(x.hardware_uuid,''),\n  NULLIF(x.disks_json,'')::jsonb,\n  NULLIF(x.memory_slots_json,'')::jsonb,\n  NULLIF(x.networks_json,'')::jsonb,\n  NULLIF(x.drives_json,'')::jsonb,\n  NOW()\nFROM jsonb_to_recordset($1::jsonb) AS x(\n  ocs_id integer, workgroup text, name text, os text, os_version text,\n  cpu text, cpu_cores integer, cpu_speed_mhz integer,\n  ram_mb integer, disk_gb integer, disk_type text,\n  ip text, mac text, bios_serial text,\n  last_contact text, username text,\n  disk_used_pct smallint, disk_health text, disk_hours_on integer,\n  last_kb_update text, kb_count_30d smallint,\n  is_virtual boolean, uptime_days integer, hardware_uuid text,\n  disks_json text, memory_slots_json text, networks_json text, drives_json text\n)\nON CONFLICT (ocs_id) DO UPDATE SET\n  workgroup=EXCLUDED.workgroup, name=EXCLUDED.name,\n  os=EXCLUDED.os, os_version=EXCLUDED.os_version,\n  cpu=EXCLUDED.cpu, cpu_cores=EXCLUDED.cpu_cores, cpu_speed_mhz=EXCLUDED.cpu_speed_mhz,\n  ram_mb=EXCLUDED.ram_mb, disk_gb=EXCLUDED.disk_gb, disk_type=EXCLUDED.disk_type,\n  ip=EXCLUDED.ip, mac=EXCLUDED.mac, bios_serial=EXCLUDED.bios_serial,\n  last_contact=EXCLUDED.last_contact, username=EXCLUDED.username,\n  disk_used_pct=EXCLUDED.disk_used_pct, disk_health=EXCLUDED.disk_health,\n  disk_hours_on=EXCLUDED.disk_hours_on, last_kb_update=EXCLUDED.last_kb_update,\n  kb_count_30d=EXCLUDED.kb_count_30d, is_virtual=EXCLUDED.is_virtual,\n  uptime_days=EXCLUDED.uptime_days, hardware_uuid=EXCLUDED.hardware_uuid,\n  disks_json=EXCLUDED.disks_json, memory_slots_json=EXCLUDED.memory_slots_json,\n  networks_json=EXCLUDED.networks_json, drives_json=EXCLUDED.drives_json,\n  synced_at=NOW()",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify($json.rows) }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Daily 03:00": {
+      "main": [
+        [
+          {
+            "node": "Fetch + Parse OCS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch + Parse OCS": {
+      "main": [
+        [
+          {
+            "node": "UPSERT cache_ocs_computers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "America/Argentina/Buenos_Aires"
+  },
+  "pinData": {}
+}

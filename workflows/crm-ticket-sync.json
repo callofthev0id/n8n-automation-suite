@@ -1,0 +1,750 @@
+{
+  "name": "crm-ticket-sync",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/10 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "0b959fcf-dfe5-4ec1-bfb9-3ee8351e324f",
+      "name": "Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        80
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "53b98c4f-b28d-4ed1-b2f1-3703e1374d31",
+      "name": "Manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": " SELECT\n    tt.ticketid, tt.ticket_no, tt.title, tt.status, tt.solution,\n    COALESCE(acc.accountname,'') AS empresa,\n    CONCAT(COALESCE(cont.firstname,''),' ',COALESCE(cont.lastname,'')) AS cliente_asignado,\n    CONCAT(COALESCE(u.first_name,''),' ',COALESCE(u.last_name,'')) AS tecnico_asignado,\n    tt.parent_id AS account_id,\n    COALESCE(tt.priority,'') AS priority,\n    COALESCE(tt.category,'') AS category,\n    crm.createdtime,\n    crm.modifiedtime,\n    NULL AS closedtime,\n    COALESCE(crm.description,'') AS description,\n    CONCAT(COALESCE(cont.firstname,''),' ',COALESCE(cont.lastname,'')) AS contacto,\n    'false' AS deleted\n  FROM vtiger_troubletickets tt\n  JOIN vtiger_crmentity crm ON tt.ticketid = crm.crmid AND crm.deleted = 0\n  LEFT JOIN vtiger_account acc ON tt.parent_id = acc.accountid\n  LEFT JOIN vtiger_contactdetails cont ON tt.contact_id = cont.contactid\n  LEFT JOIN vtiger_users u ON crm.smownerid = u.id\n  WHERE tt.status IN ('Open','In Progress','Wait For Response','Coordinado','Pendiente')\n\n  UNION\n\n  SELECT DISTINCT\n    tt.ticketid, tt.ticket_no, tt.title, tt.status, tt.solution,\n    COALESCE(acc.accountname,'') AS empresa,\n    CONCAT(COALESCE(cont.firstname,''),' ',COALESCE(cont.lastname,'')) AS cliente_asignado,\n    CONCAT(COALESCE(u.first_name,''),' ',COALESCE(u.last_name,'')) AS tecnico_asignado,\n    tt.parent_id AS account_id,\n    COALESCE(tt.priority,'') AS priority,\n    COALESCE(tt.category,'') AS category,\n    crm.createdtime,\n    crm.modifiedtime,\n    CASE WHEN tt.status IN ('Closed','Resolved','Resuelto','Cerrado/Para Entregar')\n         THEN crm.modifiedtime ELSE NULL END AS closedtime,\n    COALESCE(crm.description,'') AS description,\n    CONCAT(COALESCE(cont.firstname,''),' ',COALESCE(cont.lastname,'')) AS contacto,\n    CASE WHEN crm.deleted = 1 THEN 'true' ELSE 'false' END AS deleted\n  FROM vtiger_modtracker_basic mtb\n  JOIN vtiger_troubletickets tt ON tt.ticketid = mtb.crmid\n  JOIN vtiger_crmentity crm ON tt.ticketid = crm.crmid\n  LEFT JOIN vtiger_account acc ON tt.parent_id = acc.accountid\n  LEFT JOIN vtiger_contactdetails cont ON tt.contact_id = cont.contactid\n  LEFT JOIN vtiger_users u ON crm.smownerid = u.id\n  WHERE mtb.id >= (SELECT MAX(id) FROM vtiger_modtracker_basic) - 1500\n    AND mtb.module = 'HelpDesk'\n  ORDER BY modifiedtime DESC\n  LIMIT 2000",
+        "options": {}
+      },
+      "id": "7c46ced6-19be-43bb-8e85-fb10cab25169",
+      "name": "MySQL Tickets",
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [
+        288,
+        0
+      ],
+      "credentials": {
+        "mySql": {
+          "id": "mysql-crm-legacy",
+          "name": "mysql-crm-legacy"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map(i => ({ json: { ...i.json, synced_at: new Date().toISOString() } }));"
+      },
+      "id": "16f8c8f7-314a-4487-9ecd-c82682e518cd",
+      "name": "Code Tickets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        544,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "msp_cache"
+        },
+        "table": {
+          "__rl": true,
+          "value": "cache_tickets",
+          "mode": "list",
+          "cachedResultName": "cache_tickets"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {
+            "ticketid": 0
+          },
+          "matchingColumns": [
+            "ticketid"
+          ],
+          "schema": [
+            {
+              "id": "ticketid",
+              "displayName": "ticketid",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ticket_no",
+              "displayName": "ticket_no",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "solution",
+              "displayName": "solution",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "empresa",
+              "displayName": "empresa",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "cliente_asignado",
+              "displayName": "cliente_asignado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "tecnico_asignado",
+              "displayName": "tecnico_asignado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "synced_at",
+              "displayName": "synced_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "account_id",
+              "displayName": "account_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "createdtime",
+              "displayName": "createdtime",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "modifiedtime",
+              "displayName": "modifiedtime",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "closedtime",
+              "displayName": "closedtime",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "description",
+              "displayName": "description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "contacto",
+              "displayName": "contacto",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "deleted",
+              "displayName": "deleted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": true,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "e52b17a3-780c-4569-978f-3436df900088",
+      "name": "PG Tickets",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        800,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  cr.crmid AS entity_id,\n  cr.module AS entity_module,\n  cr.relcrmid AS related_id,\n  cr.relmodule AS related_module\nFROM vtiger_crmentityrel cr\nWHERE\n  (cr.module IN ('HelpDesk','Project','ProjectTask','Potentials','Quotes')\n   AND cr.relmodule IN ('ServiceContracts','Potentials','Quotes','HelpDesk','Project'))\n  OR\n  (cr.relmodule IN ('HelpDesk','Project','ProjectTask','Potentials','Quotes')\n   AND cr.module IN ('ServiceContracts','Potentials','Quotes','HelpDesk','Project'))\nORDER BY cr.crmid, cr.relcrmid\nLIMIT 200000",
+        "options": {}
+      },
+      "id": "2bfdd901-4685-427d-86fc-092e71a8c223",
+      "name": "MySQL Entity_rel",
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [
+        288,
+        320
+      ],
+      "credentials": {
+        "mySql": {
+          "id": "mysql-crm-legacy",
+          "name": "mysql-crm-legacy"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json);\nconst seen = new Set();\nconst out = [];\nfor (const r of rows) {\n  const eid = Number(r.entity_id) || 0;\n  const rid = Number(r.related_id) || 0;\n  const em  = String(r.entity_module  || '');\n  const rm  = String(r.related_module || '');\n  if (!eid || !rid || !em || !rm) continue;\n  const k1 = eid + '|' + em + '|' + rid + '|' + rm;\n  const k2 = rid + '|' + rm + '|' + eid + '|' + em;\n  if (!seen.has(k1)) {\n    seen.add(k1);\n    out.push({ entity_id: eid, entity_module: em, related_id: rid, related_module: rm, synced_at: new Date().toISOString() });\n  }\n  if (!seen.has(k2)) {\n    seen.add(k2);\n    out.push({ entity_id: rid, entity_module: rm, related_id: eid, related_module: em, synced_at: new Date().toISOString() });\n  }\n}\n// Sort by primary key tuple — same lock order across overlapping runs prevents deadlocks\nout.sort((a, b) => {\n  if (a.entity_id !== b.entity_id) return a.entity_id - b.entity_id;\n  if (a.entity_module !== b.entity_module) return a.entity_module < b.entity_module ? -1 : 1;\n  if (a.related_id !== b.related_id) return a.related_id - b.related_id;\n  return a.related_module < b.related_module ? -1 : (a.related_module > b.related_module ? 1 : 0);\n});\nreturn out.map(r => ({ json: r }));"
+      },
+      "id": "9851125d-43d7-4f6c-9939-d87d6a4a6c84",
+      "name": "Code Entity_rel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        544,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "msp_cache"
+        },
+        "table": {
+          "__rl": true,
+          "value": "cache_entity_rel",
+          "mode": "list",
+          "cachedResultName": "cache_entity_rel"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {
+            "entity_id": 0
+          },
+          "matchingColumns": [
+            "entity_id",
+            "entity_module",
+            "related_id",
+            "related_module"
+          ],
+          "schema": [
+            {
+              "id": "entity_id",
+              "displayName": "entity_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "entity_module",
+              "displayName": "entity_module",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "related_id",
+              "displayName": "related_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "related_module",
+              "displayName": "related_module",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "synced_at",
+              "displayName": "synced_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "4d8605e0-6d41-4531-bff2-1931a6896668",
+      "name": "PG Entity_rel",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        800,
+        320
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n    mtb.id AS basic_id,\n    mtb.crmid AS ticket_id,\n    mtb.changedon,\n    mtb.whodid AS changed_by,\n    mtd.fieldname AS field_name,\n    COALESCE(mtd.prevalue, '') AS prevalue,\n    COALESCE(mtd.postvalue, '') AS postvalue\n  FROM vtiger_modtracker_basic mtb\n  JOIN vtiger_modtracker_detail mtd ON mtd.id = mtb.id\n  WHERE mtb.id >= (SELECT MAX(id) FROM vtiger_modtracker_basic) - 1500\n    AND mtb.module = 'HelpDesk'\n    AND mtd.fieldname IN ('assigned_user_id', 'ticketstatus', 'ticketpriorities')\n  ORDER BY mtb.changedon DESC\n  LIMIT 5000",
+        "options": {}
+      },
+      "id": "modtracker-mysql",
+      "name": "MySQL Modtracker",
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.4,
+      "position": [
+        288,
+        640
+      ],
+      "credentials": {
+        "mySql": {
+          "id": "mysql-crm-legacy",
+          "name": "mysql-crm-legacy"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map(i => ({ json: { ...i.json, synced_at: new Date().toISOString() } }));"
+      },
+      "id": "modtracker-code",
+      "name": "Code Modtracker",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        544,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "msp_cache"
+        },
+        "table": {
+          "__rl": true,
+          "value": "cache_ticket_eventos",
+          "mode": "list",
+          "cachedResultName": "cache_ticket_eventos"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {
+            "basic_id": 0,
+            "field_name": "assigned_user_id"
+          },
+          "matchingColumns": [
+            "basic_id",
+            "field_name"
+          ],
+          "schema": [
+            {
+              "id": "basic_id",
+              "displayName": "basic_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ticket_id",
+              "displayName": "ticket_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "changedon",
+              "displayName": "changedon",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "changed_by",
+              "displayName": "changed_by",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "field_name",
+              "displayName": "field_name",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "prevalue",
+              "displayName": "prevalue",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "postvalue",
+              "displayName": "postvalue",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "synced_at",
+              "displayName": "synced_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": true,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "modtracker-pg-events",
+      "name": "PG Modtracker Events",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        800,
+        640
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- ────────────────────────────────────────────────────────────────────────────\n-- PG Recompute Aggregates — versión fixed 2026-05-13\n--\n-- FIX deadlock root cause:\n--   1. pg_try_advisory_xact_lock(429551) → solo 1 instancia corre a la vez;\n--      las demás salen rápido sin bloquear (RETURN del DO block).\n--   2. ORDER BY ticket_id en cada subselect → lock order determinístico.\n--   3. WHERE … IS DISTINCT FROM en cada UPDATE → no escribe filas sin cambios,\n--      corta el bloat (cada UPDATE re-escribía 10K filas; ahora ~50 típicas).\n-- ────────────────────────────────────────────────────────────────────────────\n\nDO $do$\nDECLARE\n  got_lock boolean;\nBEGIN\n  got_lock := pg_try_advisory_xact_lock(429551);\n  IF NOT got_lock THEN\n    RAISE NOTICE 'PG Recompute Aggregates: otro recompute en curso, skipping';\n    RETURN;\n  END IF;\n\n  -- 1) Aggregates desde modtracker eventos\n  UPDATE msp_cache.cache_tickets t SET\n    assigned_at        = sub.assigned_at,\n    real_assigned_at   = sub.real_assigned_at,\n    first_response_at  = sub.first_response_at,\n    resolved_at        = sub.resolved_at,\n    num_reasignaciones = sub.num_reasignaciones,\n    num_status_changes = sub.num_status_changes\n  FROM (\n    SELECT\n      ticket_id,\n      MIN(CASE WHEN field_name = 'assigned_user_id' AND COALESCE(postvalue, '') <> '' THEN changedon END) AS assigned_at,\n      MIN(CASE WHEN field_name = 'assigned_user_id' AND COALESCE(postvalue, '') NOT IN ('', '19') THEN changedon END) AS real_assigned_at,\n      MIN(CASE WHEN field_name = 'ticketstatus' AND prevalue = 'Open' AND postvalue <> 'Open' THEN changedon END) AS first_response_at,\n      MIN(CASE WHEN field_name = 'ticketstatus' AND postvalue IN ('Closed','Resolved','Resuelto','Cerrado/Para Entregar') THEN changedon END) AS resolved_at,\n      COUNT(*) FILTER (WHERE field_name = 'assigned_user_id') AS num_reasignaciones,\n      COUNT(*) FILTER (WHERE field_name = 'ticketstatus') AS num_status_changes\n    FROM msp_cache.cache_ticket_eventos\n    GROUP BY ticket_id\n    ORDER BY ticket_id\n  ) sub\n  WHERE t.ticketid = sub.ticket_id\n    AND (t.assigned_at        IS DISTINCT FROM sub.assigned_at\n      OR t.real_assigned_at   IS DISTINCT FROM sub.real_assigned_at\n      OR t.first_response_at  IS DISTINCT FROM sub.first_response_at\n      OR t.resolved_at        IS DISTINCT FROM sub.resolved_at\n      OR t.num_reasignaciones IS DISTINCT FROM sub.num_reasignaciones\n      OR t.num_status_changes IS DISTINCT FROM sub.num_status_changes);\n\n  -- 2) FS first_at\n  UPDATE msp_cache.cache_tickets t SET fs_first_at = sub.fs_first\n  FROM (\n    SELECT er.entity_id AS ticket_id, MIN(f.createdtime) AS fs_first\n    FROM msp_cache.cache_entity_rel er\n    JOIN msp_cache.cache_fs f ON f.fsid = er.related_id\n    WHERE er.entity_module = 'HelpDesk' AND er.related_module = 'ServiceContracts'\n    GROUP BY er.entity_id\n    ORDER BY er.entity_id\n  ) sub\n  WHERE t.ticketid = sub.ticket_id\n    AND t.fs_first_at IS DISTINCT FROM sub.fs_first;\n\n  -- 3) Tiempos derivados (solo donde alguno de los inputs cambió)\n  UPDATE msp_cache.cache_tickets SET\n    tiempo_a_asignacion_h     = CASE WHEN assigned_at IS NOT NULL AND assigned_at >= createdtime\n                                     THEN ROUND(EXTRACT(EPOCH FROM (assigned_at - createdtime))::numeric/3600, 2) END,\n    tiempo_en_cr_h            = CASE WHEN real_assigned_at IS NOT NULL\n                                     THEN ROUND(EXTRACT(EPOCH FROM (real_assigned_at - COALESCE(assigned_at, createdtime)))::numeric/3600, 2) END,\n    tiempo_a_first_response_h = CASE WHEN first_response_at IS NOT NULL AND first_response_at >= createdtime\n                                     THEN ROUND(EXTRACT(EPOCH FROM (first_response_at - createdtime))::numeric/3600, 2) END,\n    tiempo_a_resolucion_h     = CASE WHEN resolved_at IS NOT NULL\n                                     THEN ROUND(EXTRACT(EPOCH FROM (resolved_at - COALESCE(assigned_at, createdtime)))::numeric/3600, 2) END,\n    tiempo_a_fs_h             = CASE WHEN fs_first_at IS NOT NULL\n                                     THEN ROUND(EXTRACT(EPOCH FROM (fs_first_at - COALESCE(resolved_at, createdtime)))::numeric/3600, 2) END\n  WHERE (assigned_at IS NOT NULL OR resolved_at IS NOT NULL OR fs_first_at IS NOT NULL)\n    AND (\n      tiempo_a_asignacion_h     IS DISTINCT FROM CASE WHEN assigned_at IS NOT NULL AND assigned_at >= createdtime\n                                                       THEN ROUND(EXTRACT(EPOCH FROM (assigned_at - createdtime))::numeric/3600, 2) END\n   OR tiempo_en_cr_h            IS DISTINCT FROM CASE WHEN real_assigned_at IS NOT NULL\n                                                       THEN ROUND(EXTRACT(EPOCH FROM (real_assigned_at - COALESCE(assigned_at, createdtime)))::numeric/3600, 2) END\n   OR tiempo_a_first_response_h IS DISTINCT FROM CASE WHEN first_response_at IS NOT NULL AND first_response_at >= createdtime\n                                                       THEN ROUND(EXTRACT(EPOCH FROM (first_response_at - createdtime))::numeric/3600, 2) END\n   OR tiempo_a_resolucion_h     IS DISTINCT FROM CASE WHEN resolved_at IS NOT NULL\n                                                       THEN ROUND(EXTRACT(EPOCH FROM (resolved_at - COALESCE(assigned_at, createdtime)))::numeric/3600, 2) END\n   OR tiempo_a_fs_h             IS DISTINCT FROM CASE WHEN fs_first_at IS NOT NULL\n                                                       THEN ROUND(EXTRACT(EPOCH FROM (fs_first_at - COALESCE(resolved_at, createdtime)))::numeric/3600, 2) END\n    );\nEND\n$do$;\n",
+        "options": {}
+      },
+      "id": "modtracker-pg-recompute",
+      "name": "PG Recompute Aggregates",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1072,
+        640
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "MySQL Tickets": {
+      "main": [
+        [
+          {
+            "node": "Code Tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code Tickets": {
+      "main": [
+        [
+          {
+            "node": "PG Tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PG Tickets": {
+      "main": [
+        []
+      ]
+    },
+    "MySQL Entity_rel": {
+      "main": [
+        [
+          {
+            "node": "Code Entity_rel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code Entity_rel": {
+      "main": [
+        [
+          {
+            "node": "PG Entity_rel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PG Entity_rel": {
+      "main": [
+        []
+      ]
+    },
+    "Schedule": {
+      "main": [
+        [
+          {
+            "node": "MySQL Tickets",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "MySQL Entity_rel",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "MySQL Modtracker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual": {
+      "main": [
+        [
+          {
+            "node": "MySQL Tickets",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "MySQL Entity_rel",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "MySQL Modtracker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MySQL Modtracker": {
+      "main": [
+        [
+          {
+            "node": "Code Modtracker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code Modtracker": {
+      "main": [
+        [
+          {
+            "node": "PG Modtracker Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PG Modtracker Events": {
+      "main": [
+        [
+          {
+            "node": "PG Recompute Aggregates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "America/Argentina/Buenos_Aires",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true,
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}

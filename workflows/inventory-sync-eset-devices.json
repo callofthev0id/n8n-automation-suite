@@ -1,0 +1,455 @@
+{
+  "name": "inventory-sync-eset-devices",
+  "active": false,
+  "nodes": [
+    {
+      "id": "b890db54-39ba-45b2-b6f0-faa5a4d19596",
+      "name": "Schedule daily 04:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 4,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "94c7eea5-d274-4f58-ab49-66ae6bd07d9e",
+      "name": "Manual trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        480
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "2e1780b2-a13f-444d-a65d-38ed02e16225",
+      "name": "Get active tenants",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        440,
+        380
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT tag, eset_email, eset_password, region FROM msp_cache.eset_tenants WHERE active = true AND eset_password IS NOT NULL ORDER BY tag",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    },
+    {
+      "id": "59896ff6-22dc-45cf-ab7e-ff95eb518917",
+      "name": "ESET Auth",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        380
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "https://us.business-account.iam.eset.systems/oauth/token",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "password"
+            },
+            {
+              "name": "username",
+              "value": "={{ $json.eset_email }}"
+            },
+            {
+              "name": "password",
+              "value": "={{ $json.eset_password }}"
+            },
+            {
+              "name": "scope",
+              "value": "openid eset_connect eca ecos_api eic_api epc_api eset_id offline_access profile"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "029c89a6-f502-4467-9de7-beb6bdc33c2c",
+      "name": "Merge token+email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        380
+      ],
+      "parameters": {
+        "jsCode": "// Merge per-item: keep access_token, pull eset_email from corresponding tenant\nconst itemIndex = $itemIndex;\nconst tenant = $('Get active tenants').all()[itemIndex].json;\nreturn {\n  json: {\n    eset_email: tenant.eset_email,\n    access_token: $json.access_token || '',\n    region: tenant.region || 'us',\n    status_code: $json.status_code || null,\n  }\n};",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "89484463-c055-4ff3-82a6-146a98664664",
+      "name": "Has token?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        380
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "9c3ea5cd-5541-45ea-9a55-b3b028b5f455",
+              "leftValue": "={{ $json.access_token }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "59a073ad-aaf6-4620-9a48-7fb4ce2ccfc6",
+      "name": "ESET Fetch devices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        280
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "GET",
+        "url": "=https://{{ $json.region || \"us\" }}.device-management.eset.systems/v1/devices",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.access_token }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "pageSize",
+              "value": "200"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 90000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "pagination": {
+            "pagination": {
+              "paginationMode": "responseContainsNextURL",
+              "nextURL": "={{ $response.body.nextPageToken ? \"https://\" + ($json.region || \"us\") + \".device-management.eset.systems/v1/devices?pageSize=200&pageToken=\" + $response.body.nextPageToken : \"\" }}",
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.nextPageToken }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "35b8303e-568b-4ab8-b5b9-6b812d05b51e",
+      "name": "Tag with email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        280
+      ],
+      "parameters": {
+        "jsCode": "// Tag devices array with eset_email for downstream processing\nconst email = $('Merge token+email').item.json.eset_email;\nreturn {\n  json: {\n    eset_email: email,\n    devices: $json.devices || [],\n  }\n};",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "e822952f-27ce-442f-9c67-2395da3dd4ca",
+      "name": "Expand devices",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        280
+      ],
+      "parameters": {
+        "jsCode": "// Item: { access_token, ..., $('Get active tenants').item.eset_email }\n// Pero el item actual ya tiene el access_token + el eset_email del tenant.\n// Necesitamos: para cada item (= 1 tenant response), expandir devices[].\nconst VIRT_MACS = ['00:09:0F','00:15:5D','00:50:56','00:0C:29','00:1C:42','52:54:00','08:00:27'];\nconst GENERIC_BIOS = ['microsoft','hpe','hp ','asus','dell','gigabyte','lenovo','system manufacturer','default string','to be filled'];\nconst normMac = raw => { if(!raw) return null; const c=String(raw).replace(/[-:.]/g,'').toUpperCase(); if(!/^[0-9A-F]{12}$/.test(c)||c==='000000000000') return null; const f=c.match(/.{2}/g).join(':'); return VIRT_MACS.some(p=>f.startsWith(p))?null:f; };\nconst normDiskSerial = raw => { if(!raw) return null; const s=String(raw).trim(); if(s.length<6||/^([0-9A-Za-z])\\1+$/i.test(s)) return null; return s.toUpperCase(); };\nconst normBios = raw => { if(!raw) return null; const s=String(raw).trim(); if(s.length<8||s.includes(' ')) return null; return GENERIC_BIOS.some(p=>s.toLowerCase().startsWith(p))?null:s; };\nconst pickDiskGb = hd => { if(!hd||hd.length===0) return null; let b=0; for(const d of hd){const c=Number(d.capacityBytes); if(!isNaN(c)&&c>0&&c<100e12) b+=c;} return b>0?Math.round(b/1e9):null; };\nconst inferStatus = s => { const u=String(s||'').toUpperCase(); if(u==='OK'||u.endsWith('_OK')) return 'Protected'; if(u.includes('REQUIRED')) return 'Critical'; if(u.includes('RECOMMENDED')) return 'Warning'; return u||'Unknown'; };\n\n// $input.all() = todos los items (uno por tenant, cada uno con `devices[]` posiblemente)\nconst out = [];\nfor (const item of $input.all()) {\n  const j = item.json;\n  const email = j.eset_email;\n  const devices = j.devices || [];\n  for (const d of devices) {\n    const hp = d.hardwareProfiles?.[0];\n    out.push({ json: {\n      uuid: d.uuid,\n      hostname: d.displayName ?? null,\n      mac: hp?.networkAdapters?.[0]?.macAddress ? normMac(hp.networkAdapters[0].macAddress) : null,\n      bios_serial: hp?.bios?.serialNumber ? normBios(hp.bios.serialNumber) : null,\n      disk_serial: hp?.hardDrives?.[0]?.serialNumber ? normDiskSerial(hp.hardDrives[0].serialNumber) : null,\n      hardware_uuid: hp?.bios?.uuid ? String(hp.bios.uuid).trim() : null,\n      eset_email: email,\n      account_id: null,\n      display_name: d.displayName ?? null,\n      last_seen: d.lastSyncTime ?? null,\n      status: inferStatus(d.functionalityStatus),\n      threats: d.functionalityProblemCount ?? 0,\n      products: (d.deployedComponents ?? []).map(c => c.displayName).filter(Boolean),\n      os: d.operatingSystem?.displayName ?? null,\n      os_version: d.operatingSystem?.version?.name ?? null,\n      cpu: hp?.processors?.[0]?.caption?.trim() ?? null,\n      disk_gb: pickDiskGb(hp?.hardDrives),\n    }});\n  }\n}\nconsole.log(`Total devices mapped: ${out.length}`);\nreturn out;\n",
+        "mode": "runOnceForAllItems"
+      }
+    },
+    {
+      "id": "dd500b58-c7c1-4474-b5f1-bee2de056867",
+      "name": "Aggregate rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        380
+      ],
+      "parameters": {
+        "jsCode": "// Collect all rows into single rows_json\nconst rows = $input.all().map(i => i.json);\nconsole.log(`Aggregate: ${rows.length} rows`);\nreturn [{ json: { rows_json: JSON.stringify(rows), count: rows.length } }];\n",
+        "mode": "runOnceForAllItems"
+      }
+    },
+    {
+      "id": "3b7f29c1-5a0a-4aa1-ae88-83d4262b8d5f",
+      "name": "Bulk UPSERT",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2200,
+        380
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO msp_cache.cache_eset_devices\n  (uuid, hostname, mac, bios_serial, disk_serial, hardware_uuid,\n   eset_email, account_id, display_name, last_seen, status, threats,\n   products, os, os_version, cpu, disk_gb)\nSELECT\n  x.uuid, x.hostname, x.mac, x.bios_serial, x.disk_serial, x.hardware_uuid,\n  x.eset_email, x.account_id, x.display_name,\n  CASE WHEN x.last_seen IS NULL THEN NULL ELSE x.last_seen::timestamptz END,\n  x.status, x.threats, x.products, x.os, x.os_version, x.cpu, x.disk_gb\nFROM jsonb_to_recordset($1::jsonb) AS x(\n  uuid text, hostname text, mac text, bios_serial text, disk_serial text,\n  hardware_uuid text, eset_email text, account_id bigint, display_name text,\n  last_seen text, status text, threats integer, products text[],\n  os text, os_version text, cpu text, disk_gb integer\n)\nON CONFLICT (uuid) DO UPDATE SET\n  hostname = EXCLUDED.hostname, mac = EXCLUDED.mac,\n  bios_serial = EXCLUDED.bios_serial, disk_serial = EXCLUDED.disk_serial,\n  hardware_uuid = EXCLUDED.hardware_uuid, eset_email = EXCLUDED.eset_email,\n  account_id = EXCLUDED.account_id, display_name = EXCLUDED.display_name,\n  last_seen = EXCLUDED.last_seen, status = EXCLUDED.status,\n  threats = EXCLUDED.threats, products = EXCLUDED.products,\n  os = EXCLUDED.os, os_version = EXCLUDED.os_version,\n  cpu = EXCLUDED.cpu, disk_gb = EXCLUDED.disk_gb,\n  synced_at = NOW()\nRETURNING uuid;",
+        "options": {
+          "queryReplacement": "={{ $json.rows_json }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    },
+    {
+      "id": "a7777777-7777-4777-8777-777777777777",
+      "name": "Contar guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const n = $(\"Expand devices\").all().length; return [{json:{system:\"eset_devices\", rows_written:n, floor:1}}];"
+      }
+    },
+    {
+      "id": "a8888888-8888-4888-8888-888888888888",
+      "name": "Reportar salud",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1600,
+        200
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "NIRdVKNBccEqq8Xg",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule daily 04:00": {
+      "main": [
+        [
+          {
+            "node": "Get active tenants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual trigger": {
+      "main": [
+        [
+          {
+            "node": "Get active tenants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get active tenants": {
+      "main": [
+        [
+          {
+            "node": "ESET Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ESET Auth": {
+      "main": [
+        [
+          {
+            "node": "Merge token+email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge token+email": {
+      "main": [
+        [
+          {
+            "node": "Has token?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has token?": {
+      "main": [
+        [
+          {
+            "node": "ESET Fetch devices",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "ESET Fetch devices": {
+      "main": [
+        [
+          {
+            "node": "Tag with email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag with email": {
+      "main": [
+        [
+          {
+            "node": "Expand devices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand devices": {
+      "main": [
+        [
+          {
+            "node": "Aggregate rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate rows": {
+      "main": [
+        [
+          {
+            "node": "Bulk UPSERT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bulk UPSERT": {
+      "main": [
+        [
+          {
+            "node": "Contar guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Contar guard": {
+      "main": [
+        [
+          {
+            "node": "Reportar salud",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Argentina/Buenos_Aires",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {}
+}

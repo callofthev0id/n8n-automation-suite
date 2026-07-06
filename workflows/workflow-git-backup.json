@@ -1,0 +1,263 @@
+{
+  "name": "workflow-git-backup",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 2,
+              "field": "days"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "id": "96611773-8851-4126-8c15-27325582ce50",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "filters": {},
+        "requestOptions": {}
+      },
+      "type": "n8n-nodes-base.n8n",
+      "typeVersion": 1,
+      "position": [
+        208,
+        0
+      ],
+      "id": "aac5569d-96e0-43a8-952f-f2e835ffb54c",
+      "name": "Get many workflows",
+      "credentials": {
+        "n8nApi": {
+          "id": "n8n-api",
+          "name": "n8n-api"
+        }
+      }
+    },
+    {
+      "id": "d7eb745a-e4f8-4369-976e-4f84e441fba2",
+      "name": "Try GET file",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/your-org/workflow-backups/contents/workflows/{{ $json.id }}.json",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "credentials": {
+        "githubApi": {
+          "id": "github-token",
+          "name": "github-token"
+        }
+      }
+    },
+    {
+      "id": "d80d131e-ea53-4eb3-9f24-e6f34a1b748d",
+      "name": "Build payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Build GitHub upsert payload — runs once per item\nconst httpResp = $json;\nconst wfData = $('Get many workflows').item.json;\n\nconst status = httpResp.statusCode ?? null;\nconst existingBody = httpResp.body || {};\nconst existingSha = (status >= 200 && status < 300) ? existingBody.sha : null;\nconst existingB64 = (status >= 200 && status < 300) ? (existingBody.content || '').replace(/\\s/g, '') : null;\n\nconst content = JSON.stringify(wfData, null, 2);\nconst newB64 = Buffer.from(content, 'utf8').toString('base64');\n\nif (existingSha && existingB64 === newB64) {\n  return { json: {\n    skip: true,\n    path: `workflows/${wfData.id}.json`,\n    workflow_name: wfData.name,\n    reason: 'unchanged',\n  }};\n}\n\nconst fecha = $now.setZone('America/Argentina/Buenos_Aires').toFormat('dd/MM/yyyy HH:mm');\nconst op = existingSha ? 'update' : 'create';\n\nreturn { json: {\n  skip: false,\n  path: `workflows/${wfData.id}.json`,\n  workflow_name: wfData.name,\n  op,\n  body: {\n    message: `Backup ${op}: ${wfData.name} — ${fecha}`,\n    content: newB64,\n    ...(existingSha ? { sha: existingSha } : {}),\n  },\n}};\n",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "63e86c3f-69e1-4564-b77d-3b03ff94bf90",
+      "name": "¿Necesita PUT?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b10fb9ac-f29e-45c7-b5c5-5a65204d0d2d",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "abc980a4-678f-4909-b472-bf12e2efcf12",
+      "name": "PUT file",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1280,
+        200
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://api.github.com/repos/your-org/workflow-backups/contents/{{ $json.path }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "credentials": {
+        "githubApi": {
+          "id": "github-token",
+          "name": "github-token"
+        }
+      }
+    },
+    {
+      "id": "56e01b38-6851-40ba-8657-5c2270e912ae",
+      "name": "Skipped (unchanged)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1280,
+        420
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get many workflows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get many workflows": {
+      "main": [
+        [
+          {
+            "node": "Try GET file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Try GET file": {
+      "main": [
+        [
+          {
+            "node": "Build payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build payload": {
+      "main": [
+        [
+          {
+            "node": "¿Necesita PUT?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Necesita PUT?": {
+      "main": [
+        [
+          {
+            "node": "PUT file",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skipped (unchanged)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "executionOrder": "v1",
+    "timezone": "America/Argentina/Buenos_Aires"
+  },
+  "pinData": {}
+}

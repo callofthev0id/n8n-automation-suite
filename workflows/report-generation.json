@@ -1,0 +1,707 @@
+{
+  "name": "report-generation",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "informe-generacion",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook_trigger",
+      "name": "webhook_trigger",
+      "type": "n8n-nodes-base.webhook",
+      "position": [
+        80,
+        352
+      ],
+      "webhookId": "informe-generacion",
+      "typeVersion": 2.1
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \"nombreCorto\", \"ocsGroup\", \"zabbixGroup\", \"esetEmail\", \"vtigerId\", \"contrato_servidores\", \"contrato_servidores_virt\", \"contrato_estaciones\", \"contrato_nas\", \"contrato_backup_clientes\", \"contrato_visitas_anuales\" FROM crm_cache.clientes WHERE \"nombreCorto\" = '{{ String($json.body.nc || '').replace(/'/g, \"''\") }}'",
+        "options": {}
+      },
+      "id": "get_cliente",
+      "name": "get_cliente",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        304,
+        352
+      ],
+      "typeVersion": 2.6,
+      "credentials": {
+        "postgres": {
+          "id": "postgres-crm",
+          "name": "postgres-crm"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const client = $input.first().json\nreturn [{ json: { ...client } }]"
+      },
+      "id": "resolver_modulos",
+      "name": "resolver_modulos",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        528,
+        352
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH scoped AS (\n  SELECT ci.*,\n    LOWER(SPLIT_PART(TRIM(ci.hostname), '.', 1)) AS dkey,\n    CASE ci.source WHEN 'merged' THEN 0 WHEN 'ocs-only' THEN 1 ELSE 2 END AS src_rank\n  FROM msp_cache.cache_inventario ci\n  WHERE LOWER(REGEXP_REPLACE(workgroup, '\\.local$', '', 'i')) = LOWER(REGEXP_REPLACE('{{ String($(\"resolver_modulos\").first().json.ocsGroup || '').replace(/'/g, \"''\") }}', '\\.local$', '', 'i'))\n     OR (workgroup = 'unknown-eset' AND LOWER(eset_email) = LOWER('{{ String($(\"resolver_modulos\").first().json.esetEmail || '').replace(/'/g, \"''\") }}'))\n),\neset_overlay AS (\n  SELECT DISTINCT ON (dkey) dkey,\n    eset_uuid AS o_eset_uuid, eset_display_name AS o_eset_display_name,\n    eset_last_seen AS o_eset_last_seen, eset_status AS o_eset_status,\n    eset_threats AS o_eset_threats, eset_email AS o_eset_email, eset_products AS o_eset_products\n  FROM scoped WHERE source = 'eset-only'\n  ORDER BY dkey, eset_last_seen DESC NULLS LAST\n),\nprimaria AS (\n  SELECT DISTINCT ON (dkey) * FROM scoped\n  ORDER BY dkey, src_rank, (CASE WHEN hostname LIKE '%.%' THEN 1 ELSE 0 END), ocs_last_contact DESC NULLS LAST\n)\nSELECT\n  p.inv_id, p.workgroup, p.hostname, p.mac, p.bios_serial, p.hardware_uuid,\n  p.os, p.os_version, p.cpu, p.cpu_cores, p.cpu_speed_mhz, p.ram_mb,\n  p.disk_gb, p.disk_type, p.ip, p.disk_used_pct, p.disk_health, p.disk_hours_on,\n  p.ocs_id, p.ocs_last_contact, p.ocs_username, p.ocs_tag,\n  COALESCE(p.eset_uuid, eo.o_eset_uuid) AS eset_uuid,\n  COALESCE(p.eset_display_name, eo.o_eset_display_name) AS eset_display_name,\n  COALESCE(p.eset_last_seen, eo.o_eset_last_seen) AS eset_last_seen,\n  COALESCE(p.eset_status, eo.o_eset_status) AS eset_status,\n  COALESCE(NULLIF(p.eset_threats, 0), eo.o_eset_threats, 0) AS eset_threats,\n  COALESCE(p.eset_products, eo.o_eset_products) AS eset_products,\n  COALESCE(p.eset_email, eo.o_eset_email) AS eset_email,\n  p.last_kb_update, p.kb_count_30d, p.is_virtual, p.uptime_days,\n  p.disks_json, p.memory_slots_json, p.networks_json, p.drives_json,\n  CASE WHEN p.source = 'ocs-only' AND eo.o_eset_uuid IS NOT NULL THEN 'merged' ELSE p.source END AS source,\n  CASE WHEN p.source = 'ocs-only' AND eo.o_eset_uuid IS NOT NULL THEN 'hostname' ELSE p.source_match END AS source_match,\n  p.synced_at\nFROM primaria p\nLEFT JOIN eset_overlay eo ON eo.dkey = p.dkey\nORDER BY (CASE WHEN p.source = 'merged' THEN 0 WHEN p.source = 'ocs-only' THEN 1 ELSE 2 END), p.hostname ASC",
+        "options": {}
+      },
+      "id": "sql_inventario",
+      "name": "sql_inventario",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        752,
+        -368
+      ],
+      "typeVersion": 2.6,
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT cd.det_id, cd.inv_id, cd.eset_uuid, cd.category, cd.severity, cd.occur_time, ci.hostname, ci.eset_status, ci.eset_products, ci.eset_email, ci.eset_last_seen FROM msp_cache.cache_inventario_detecciones cd JOIN msp_cache.cache_inventario ci ON ci.inv_id = cd.inv_id WHERE LOWER(ci.eset_email) = LOWER('{{ String($(\"resolver_modulos\").first().json.esetEmail || '').replace(/'/g, \"''\") }}') AND cd.occur_time >= NOW() - INTERVAL '35 days'",
+        "options": {}
+      },
+      "id": "sql_seguridad",
+      "name": "sql_seguridad",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        752,
+        -224
+      ],
+      "typeVersion": 2.6,
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT ct.*, COALESCE(vh.horas_fs,0) AS horas_fs, COALESCE(vh.fs_count,0) AS fs_count, (SELECT array_agg(DISTINCT fs.tipo_soporte) FILTER (WHERE fs.tipo_soporte IS NOT NULL)  FROM msp_cache.cache_entity_rel rel  JOIN msp_cache.cache_fs fs ON fs.fsid = rel.related_id  WHERE rel.entity_id = ct.ticketid AND rel.entity_module='HelpDesk' AND rel.related_module='ServiceContracts') AS tipos_soporte, (SELECT array_agg(fs.contract_no)  FROM msp_cache.cache_entity_rel rel  JOIN msp_cache.cache_fs fs ON fs.fsid = rel.related_id  WHERE rel.entity_id = ct.ticketid AND rel.entity_module='HelpDesk' AND rel.related_module='ServiceContracts') AS fs_numeros FROM msp_cache.cache_tickets ct LEFT JOIN msp_cache.v_ticket_horas_fs vh ON vh.ticketid = ct.ticketid WHERE ct.account_id = ANY(string_to_array(NULLIF(regexp_replace('{{ String($(\"resolver_modulos\").first().json.vtigerId || '').replace(/'/g, \"''\") }}', '\\\\s', '', 'g'), ''), ',')::bigint[]) AND ct.createdtime >= NOW() - INTERVAL '35 days' AND (ct.deleted = false OR ct.deleted IS NULL)",
+        "options": {}
+      },
+      "id": "sql_sla",
+      "name": "sql_sla",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        752,
+        48
+      ],
+      "typeVersion": 2.6,
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT zh.* FROM msp_cache.cache_zabbix_hosts zh WHERE zh.group_id = {{ Number($(\"resolver_modulos\").first().json.zabbixGroup) || 0 }}",
+        "options": {}
+      },
+      "id": "sql_servidores",
+      "name": "sql_servidores",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        752,
+        208
+      ],
+      "typeVersion": 2.6,
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT zt.* FROM msp_cache.cache_zabbix_triggers zt WHERE zt.group_id = {{ Number($(\"resolver_modulos\").first().json.zabbixGroup) || 0 }} AND zt.is_active = true",
+        "options": {}
+      },
+      "id": "sql_disponibilidad",
+      "name": "sql_disponibilidad",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        976,
+        208
+      ],
+      "typeVersion": 2.6,
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT d.infra_backup FROM crm_cache.diagnosticos d WHERE d.nc = '{{ String($(\"resolver_modulos\").first().json.nombreCorto || '').replace(/'/g, \"''\") }}' AND d.borrador = false ORDER BY d.created_at DESC LIMIT 1",
+        "options": {}
+      },
+      "id": "sql_backups",
+      "name": "sql_backups",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        752,
+        496
+      ],
+      "typeVersion": 2.6,
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "postgres-crm",
+          "name": "postgres-crm"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst rows = $input.all().map(i => i.json)\n\n// Mapping de build → versión humana\nfunction osHumanLabel(os, version) {\n  if (!os) return 'Desconocido'\n  const o = String(os)\n  const v = String(version || '')\n  // Win 11 builds\n  if (v.startsWith('10.0.26')) return o + ' · 25H2'\n  if (v.startsWith('10.0.22631')) return o + ' · 23H2'\n  if (v.startsWith('10.0.22621')) return o + ' · 22H2'\n  if (v.startsWith('10.0.22000')) return o + ' · 21H2'\n  // Win 10 builds\n  if (v.startsWith('10.0.19045')) return o + ' · 22H2'\n  if (v.startsWith('10.0.19044')) return o + ' · 21H2'\n  if (v.startsWith('10.0.19043')) return o + ' · 21H1'\n  if (v.startsWith('10.0.19042')) return o + ' · 20H2'\n  if (v.startsWith('10.0.19041')) return o + ' · 2004'\n  if (v.startsWith('10.0.18363')) return o + ' · 1909'\n  if (v.startsWith('10.0.17763')) return o + ' · 1809 LTSC'\n  if (v.startsWith('10.0.14393')) return o + ' · 1607 LTSB'\n  // Win 7 / 8\n  if (v.startsWith('6.1.7601')) return o + ' SP1 (EOL)'\n  // Server\n  if (v.startsWith('10.0.20348')) return o + ' (Server 2022)'\n  if (v.startsWith('10.0.17763')) return o + ' (Server 2019)'\n  if (v.startsWith('10.0.14393')) return o + ' (Server 2016)'\n  if (v) return o + ' · ' + v\n  return o\n}\n\nif (!rows.length) return [{ json: { name: 'inventario', skip: true } }]\n\nconst isServer = (os) => /server\\b/i.test(os || '')\n// EOL: todo SO < Windows 11 = fin de vida útil (sincronizado con cross-ref.ts EOL_KEYWORDS)\nconst EOL_CLIENT = [/windows xp/i, /windows vista/i, /windows 7/i, /windows 8\\b/i, /windows 8\\.1/i, /windows 10/i]\nconst EOL_SERVER = [/server 2003/i, /server 2008/i, /server 2012/i]\nconst isEol = (os) => {\n  if (!os) return false\n  const arr = isServer(os) ? EOL_SERVER : EOL_CLIENT\n  return arr.some(p => p.test(os))\n}\nconst STALE_MS = 30 * 24 * 3600 * 1000\nconst isStale = (r) => {\n  if (!r.ocs_last_contact) return true\n  return (Date.now() - new Date(r.ocs_last_contact).getTime()) > STALE_MS\n}\nconst cleanOs = (os) => os ? os.replace(/^Microsoft /,'').replace(/ Edition$/,'').slice(0, 50) : 'Desconocido'\n\n// SMART health: parse \"Bueno (85 %)\" → 85\nfunction smartHealthPct(s) {\n  if (!s) return null\n  const m = String(s).match(/(\\d+)\\s*%/)\n  return m ? parseInt(m[1], 10) : null\n}\n\n// Per-equipment criteria evaluation\nfunction evaluateCriteria(r) {\n  const isW11 = /windows 11/i.test(r.os || '')\n  const isWinServer = isServer(r.os)\n  const ram_ok = (r.ram_mb || 0) >= 8192\n  // Disco desconocido (no reportado) → null: no suma ni resta al score. Solo HDD confirmado penaliza.\n  const ssd_ok = r.disk_type === 'SSD' ? true : (r.disk_type === 'HDD' ? false : null)\n  const disk_ok = r.disk_used_pct == null ? null : (r.disk_used_pct < 90)\n  const smartPct = smartHealthPct(r.disk_health)\n  const smart_ok = smartPct == null ? null : (smartPct >= 70)\n  const cores_ok = (r.cpu_cores || 0) >= 4\n  // Updates: <90 días desde last_kb_update\n  let updates_ok = null\n  if (r.last_kb_update) {\n    const days = (Date.now() - new Date(r.last_kb_update).getTime()) / (24*3600*1000)\n    updates_ok = days < 90\n  }\n  const eset_ok = !!r.eset_uuid\n  const os_ok = !isEol(r.os) && (isWinServer || isW11)\n  // OS rule: para servidores no exigimos Win11, solo no-EOL. Para clientes, Win11 (no EOL).\n\n  return {\n    os_ok,            // 20 pts\n    ram_ok,           // 15 pts\n    ssd_ok,           // 15 pts\n    disk_ok,          // 10 pts (null si no hay data)\n    smart_ok,         // 10 pts (null si no hay data)\n    cores_ok,         // 10 pts\n    updates_ok,       // 10 pts (null si no hay data)\n    eset_ok,          // 10 pts\n  }\n}\n\n// Score per equipment: pesos del usuario\nconst WEIGHTS = {\n  os_ok: 20, ram_ok: 15, ssd_ok: 15, disk_ok: 10,\n  smart_ok: 10, cores_ok: 10, updates_ok: 10, eset_ok: 10,\n}\n\nfunction scoreFor(crit) {\n  // Si un criterio es null (sin data), lo excluimos del divisor (no penaliza)\n  let achieved = 0\n  let possible = 0\n  for (const [k, w] of Object.entries(WEIGHTS)) {\n    const v = crit[k]\n    if (v === null || v === undefined) continue\n    possible += w\n    if (v === true) achieved += w\n  }\n  if (possible === 0) return 0\n  return Math.round((achieved / possible) * 100)\n}\n\n// Process every row: attach criteria + score\nconst processed = rows.map(r => {\n  const criteria = evaluateCriteria(r)\n  const score = scoreFor(criteria)\n  return { ...r, criteria, score, _server: isServer(r.os), _stale: isStale(r), _eol: isEol(r.os) }\n})\n\n// Counts per criterion (only over non-stale + non-null)\nfunction countCriterion(list, key) {\n  const evaluable = list.filter(r => !r._stale && r.criteria[key] !== null && r.criteria[key] !== undefined)\n  const cumplen  = evaluable.filter(r => r.criteria[key] === true).length\n  return { evaluable: evaluable.length, cumplen }\n}\n\nfunction statsFor(list) {\n  const total = list.length\n  const stale = list.filter(r => r._stale).length\n  const activos = total - stale\n  const scores = list.filter(r => !r._stale).map(r => r.score)\n  const avgScore = scores.length ? Math.round(scores.reduce((s,x)=>s+x,0)/scores.length) : 0\n  const ok       = scores.filter(s => s >= 70).length\n  const atencion = scores.filter(s => s >= 50 && s < 70).length\n  const critico  = scores.filter(s => s < 50).length\n  const eol = list.filter(r => r._eol).length\n  return {\n    total, stale, activos, eol, avgScore, ok, atencion, critico,\n    criterios: {\n      os: countCriterion(list, 'os_ok'),\n      ram: countCriterion(list, 'ram_ok'),\n      ssd: countCriterion(list, 'ssd_ok'),\n      disk: countCriterion(list, 'disk_ok'),\n      smart: countCriterion(list, 'smart_ok'),\n      cores: countCriterion(list, 'cores_ok'),\n      updates: countCriterion(list, 'updates_ok'),\n      eset: countCriterion(list, 'eset_ok'),\n    }\n  }\n}\n\nconst clientes  = processed.filter(r => !r._server)\nconst servidores = processed.filter(r => r._server)\nconst C = statsFor(clientes)\nconst S = statsFor(servidores)\n\n// Combined module score: weighted by counts (clients pesan más)\nconst allActive = processed.filter(r => !r._stale)\nconst moduleScore = allActive.length\n  ? Math.round(allActive.reduce((s,r) => s + r.score, 0) / allActive.length)\n  : 0\n\n// OS distribution\nconst osCounts = {}\nprocessed.forEach(r => {\n  const k = cleanOs(r.os)\n  osCounts[k] = (osCounts[k]||0)+1\n})\nconst sistOperativos = Object.entries(osCounts)\n  .sort((a,b) => b[1]-a[1]).slice(0, 8)\n  .map(([label,value]) => ({ label, value }))\n\n// Score distribution chart\nconst distribOk = allActive.filter(r => r.score >= 70).length\nconst distribAt = allActive.filter(r => r.score >= 50 && r.score < 70).length\nconst distribCr = allActive.filter(r => r.score < 50).length\nconst scoreDistribution = []\nif (distribOk > 0) scoreDistribution.push({ label: 'OK (≥70)',       value: distribOk, color: '#43C961' })\nif (distribAt > 0) scoreDistribution.push({ label: 'Atención (50-69)', value: distribAt, color: '#d4900a' })\nif (distribCr > 0) scoreDistribution.push({ label: 'Crítico (<50)',   value: distribCr, color: '#F05754' })\n\n// Table rows: simplified for UI\nconst tabla = processed.map(r => ({\n  hostname: r.hostname || '?',\n  os: cleanOs(r.os),\n  os_raw: r.os || '',\n  os_version: r.os_version || '',\n  os_human: osHumanLabel(cleanOs(r.os), r.os_version),\n  kb_count_30d: r.kb_count_30d || null,\n  is_server: r._server,\n  eol: r._eol,\n  stale: r._stale,\n  ram_mb: r.ram_mb || 0,\n  cpu_cores: r.cpu_cores || 0,\n  cpu_speed_mhz: r.cpu_speed_mhz || 0,\n  disk_gb: r.disk_gb || 0,\n  disk_type: r.disk_type || null,\n  disk_used_pct: r.disk_used_pct,\n  disk_health: r.disk_health,\n  disk_hours_on: r.disk_hours_on,\n  cpu: r.cpu || '',\n  ip: r.ip || '',\n  user: r.user || r.ocs_username || '',\n  ocs_last_contact: r.ocs_last_contact || null,\n  eset_status: r.eset_status || null,\n  eset_last_seen: r.eset_last_seen || null,\n  has_eset: !!r.eset_uuid,\n  is_virtual: !!r.is_virtual,\n  last_kb_update: r.last_kb_update || null,\n  uptime_days: r.uptime_days,\n  source: r.source || 'ocs-only',\n  score: r.score,\n  criteria: r.criteria,\n}))\n\n  \n  // F4 — narrativas dual (vars precomputadas)\nconst _nTotal = processed.length;\nconst _nActivos = allActive.length;\nconst _nStale = _nTotal - _nActivos;\nconst _nEol = processed.filter(r => r._eol).length;\nconst _nEsetOk = processed.filter(r => r.eset_uuid).length;\nconst _nPctEset = _nTotal > 0 ? Math.round((_nEsetOk / _nTotal) * 100) : 0;\nconst narrative = `${_nTotal} dispositivos en inventario. ${_nEol} obsoletos (EOL), ${_nStale} sin contacto reciente. Cobertura ESET: ${_nPctEset}% (${_nEsetOk}/${_nTotal}). Score promedio: ${moduleScore}/100.`;\nconst narrativeClient = `Su parque cuenta con ${_nTotal} dispositivos relevados. ${_nEol === 0 ? 'No se detectaron equipos con sistemas operativos sin soporte.' : `Identificamos ${_nEol} ${_nEol === 1 ? 'equipo con sistema operativo' : 'equipos con sistemas operativos'} sin soporte vigente, que se recomienda actualizar.`} La cobertura de protección antimalware alcanza el ${_nPctEset}% del parque.`;\n\n  return [{ json: {\n  name: 'inventario',\n  narrative,\n  narrativeClient,\n  score: moduleScore,\n  metrics: {\n    total: processed.length,\n    activos: allActive.length,\n    stale: processed.length - allActive.length,\n    eolCount: processed.filter(r => r._eol).length,\n    obsoletos: processed.filter(r => (r.ram_mb && r.ram_mb < 4096) || (r.cpu_cores && r.cpu_cores < 2)).length,\n    esetOk: processed.filter(r => r.eset_uuid).length,\n    sinEset: processed.length - processed.filter(r => r.eset_uuid).length,\n    pctEsetOk: processed.length > 0 ? Math.round((processed.filter(r => r.eset_uuid).length / processed.length) * 100) : 0,\n    avgScore: moduleScore,\n    clientes: C,\n    servidores: S,\n  },\n  charts: {\n    scoreDistribution: scoreDistribution.length >= 2 ? scoreDistribution : [],\n    sistOperativos: sistOperativos.length >= 2 ? sistOperativos : [],\n  },\n  tabla,\n  ai_prompt: `Inventario: ${processed.length} equipos (${C.total} clientes, ${S.total} servidores). Score promedio ${moduleScore}/100. ${C.criterios.ssd.cumplen}/${C.criterios.ssd.evaluable} clientes con SSD, ${C.criterios.ram.cumplen}/${C.criterios.ram.evaluable} con RAM≥8GB.`,\n} }]\n"
+      },
+      "id": "transform_inventario",
+      "name": "transform_inventario",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        976,
+        -368
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "function stripDomain(h) {\n  if (!h) return '?'\n  return String(h).split('.')[0].toUpperCase()\n}\n\nconst detections = (() => { try { return $('sql_seguridad').all().map(i => i.json) } catch(_) { return $input.all().map(i => i.json) } })()\n\n// Incidentes ESET (tenant-wide; deviceUuids siempre [] → no se bindean por host)\nlet incidentes = []\ntry { incidentes = $('sql_incidentes').all().map(i => i.json) } catch (_) {}\n\nlet totalDispositivos = 0, conEset = 0, sinEset = 0, reportandoReciente = 0\nconst statusDist = { OK: 0, WARN: 0, CRITICAL: 0, OTHER: 0 }\nlet inv = []\ntry {\n  inv = $('sql_inventario').all().map(i => i.json)\n  totalDispositivos = inv.length\n  const cutoff = Date.now() - 30 * 24 * 3600 * 1000\n  for (const r of inv) {\n    if (r.eset_uuid) {\n      conEset++\n      const seen = r.eset_last_seen ? new Date(r.eset_last_seen).getTime() : 0\n      if (seen >= cutoff) reportandoReciente++\n      const st = String(r.eset_status || '').toUpperCase().trim()\n      if (st === 'OK' || st === 'PROTECTED') statusDist.OK++\n      else if (st === 'WARN' || st === 'WARNING' || st === 'ATTENTION') statusDist.WARN++\n      else if (st === 'CRITICAL') statusDist.CRITICAL++\n      else if (st) statusDist.OTHER++\n    } else { sinEset++ }\n  }\n} catch (_) {}\n\nif (conEset === 0 && incidentes.length === 0 && detections.length === 0) {\n  return [{ json: { name: 'seguridad', skip: true } }]\n}\n\nconst pctCobertura = totalDispositivos > 0 ? Math.round((conEset / totalDispositivos) * 100) : 0\nconst pctReportando = conEset > 0 ? Math.round((reportandoReciente / conEset) * 100) : 0\n\n// ── Amenazas desde INCIDENTES (ESET incident-management v2) ──\nfunction incSev(raw) {\n  const s = String(raw || '').toUpperCase()\n  if (s.includes('HIGH') || s.includes('CRITICAL')) return 'Crítica'\n  if (s.includes('MEDIUM')) return 'Media'\n  return 'Baja'\n}\nconst amenazas = incidentes.length\nconst amenazasCriticas = incidentes.filter(i => incSev(i.severity) === 'Crítica').length\n\n// ── Charts: SOLO cobertura general + estado ESET (Fase 3) ──\nconst estadoEset = Object.entries(statusDist).filter(([, v]) => v > 0).map(([label, value]) => ({\n  label, value, color: label === 'OK' ? '#43C961' : label === 'WARN' ? '#d4900a' : label === 'CRITICAL' ? '#F05754' : '#888',\n}))\nconst cobertura = [\n  { label: 'Con ESET reportando', value: reportandoReciente, color: '#43C961' },\n  { label: 'Sin reportar 30d', value: conEset - reportandoReciente, color: '#d4900a' },\n  { label: 'Sin ESET', value: sinEset, color: '#F05754' },\n].filter(x => x.value > 0)\n\n// ── Detecciones por host (agrupadas por categoría) para anidar en cada equipo ──\nfunction detSev(raw) {\n  const s = String(raw || '').toUpperCase()\n  if (s.includes('HIGH') || s.includes('CRITICAL')) return 'Crítica'\n  if (s.includes('MEDIUM')) return 'Media'\n  return 'Baja'\n}\nconst SEVRANK = { 'Crítica': 3, 'Media': 2, 'Baja': 1 }\nconst detByInv = {}\nfor (const d of detections) {\n  const key = String(d.inv_id)\n  if (!detByInv[key]) detByInv[key] = {}\n  const cat = d.category || 'Detección'\n  const sev = detSev(d.severity)\n  let g = detByInv[key][cat]\n  if (!g) { g = detByInv[key][cat] = { host: stripDomain(d.hostname), category: cat, severity: sev, occurTime: d.occur_time || null, count: 0 } }\n  g.count++\n  if (SEVRANK[sev] > SEVRANK[g.severity]) g.severity = sev\n  if (d.occur_time && (!g.occurTime || new Date(d.occur_time) > new Date(g.occurTime))) g.occurTime = d.occur_time\n}\n\n// ── Tablas unificadas (Fase 3) ──\nconst tablaConCobertura = []\nconst tablaSinCobertura = []\nconst cutoffSin = Date.now() - 30 * 24 * 3600 * 1000\nfor (const r of inv) {\n  const cleanHost = stripDomain(r.hostname)\n  if (r.eset_uuid) {\n    const grupos = Object.values(detByInv[String(r.inv_id)] || {})\n      .sort((a, b) => (SEVRANK[b.severity] - SEVRANK[a.severity]) || (b.count - a.count))\n    const total = grupos.reduce((s, g) => s + g.count, 0)\n    const crit = grupos.filter(g => g.severity === 'Crítica').reduce((s, g) => s + g.count, 0)\n    const esetVer = Array.isArray(r.eset_products) && r.eset_products.length > 0\n      ? (r.eset_products.find(p => p && p.length > 0) || null)\n      : (r.eset_uuid ? 'instalado' : null)\n    const stRaw = String(r.eset_status || '').toUpperCase().trim()\n    const esetStatus = (stRaw === 'OK' || stRaw === 'PROTECTED') ? 'OK'\n      : (stRaw === 'WARN' || stRaw === 'WARNING' || stRaw === 'ATTENTION') ? 'WARN'\n        : (stRaw === 'CRITICAL') ? 'CRITICAL' : null\n    tablaConCobertura.push({\n      hostname: cleanHost,\n      usuario: r.ocs_username || null,\n      so: r.os || '?',\n      soVersion: r.os_version || '',\n      esetVersion: esetVer,\n      esetStatus,\n      estadoProteccion: r.eset_status || null,\n      lastSeen: r.eset_last_seen || r.ocs_last_contact || null,\n      deteccionesTotal: total,\n      deteccionesCriticas: crit,\n      detecciones: grupos.map(g => ({ host: g.host, category: g.category, severity: g.severity, occurTime: g.occurTime, count: g.count })),\n      ram_mb: r.ram_mb != null ? Number(r.ram_mb) : undefined,\n      disk_gb: r.disk_gb != null ? Number(r.disk_gb) : undefined,\n      cpu: r.cpu || undefined,\n    })\n  } else {\n    const last = r.ocs_last_contact ? new Date(r.ocs_last_contact).getTime() : 0\n    if (last >= cutoffSin) {\n      tablaSinCobertura.push({\n        hostname: cleanHost,\n        usuario: r.ocs_username || null,\n        so: r.os || '?',\n        soVersion: r.os_version || '',\n        ocsLastContact: r.ocs_last_contact || null,\n      })\n    }\n  }\n}\ntablaConCobertura.sort((a, b) => (b.deteccionesTotal - a.deteccionesTotal) || a.hostname.localeCompare(b.hostname))\ntablaSinCobertura.sort((a, b) => a.hostname.localeCompare(b.hostname))\n\nconst _OK = statusDist.OK || 0, _WARN = statusDist.WARN || 0, _CRIT = statusDist.CRITICAL || 0\nconst narrative = `Cobertura ESET ${pctCobertura}% (${conEset}/${totalDispositivos}). ${reportandoReciente} reportaron en últimos 30d (${pctReportando}%). ${amenazas} incidentes de seguridad (${amenazasCriticas} de alta severidad). Estados: ${_OK} OK, ${_WARN} atención, ${_CRIT} crítico.`\nconst narrativeClient = `${pctCobertura}% del parque cuenta con protección antimalware activa y gestionada. ${pctReportando >= 90 ? 'La mayoría de los equipos protegidos reportaron su estado recientemente.' : `${pctReportando}% de los equipos protegidos reportaron su estado recientemente; el resto será revisado en las próximas visitas técnicas.`} ${amenazas === 0 ? 'No se registraron incidentes de seguridad en el período.' : `Se registraron ${amenazas} ${amenazas === 1 ? 'incidente' : 'incidentes'} de seguridad${amenazasCriticas > 0 ? `, de los cuales ${amenazasCriticas} ${amenazasCriticas === 1 ? 'fue de alta severidad y está bajo seguimiento' : 'fueron de alta severidad y están bajo seguimiento'}` : ''}.`}`\n\nconst score = Math.max(0, Math.min(100, pctCobertura * 0.5 + pctReportando * 0.3 - amenazasCriticas * 5 + (statusDist.OK / Math.max(1, conEset)) * 20))\n\nreturn [{ json: {\n  name: 'seguridad', narrative, narrativeClient, score: Math.round(score),\n  metrics: {\n    totalDispositivos, protegidos: conEset, sinEset, reportandoReciente, pctCobertura, pctReportando,\n    amenazas, amenazasCriticas, statusOK: statusDist.OK, statusWARN: statusDist.WARN, statusCRITICAL: statusDist.CRITICAL,\n  },\n  charts: {\n    cobertura,\n    estadoEset: estadoEset.length >= 2 ? estadoEset : [],\n  },\n  tablaConCobertura,\n  tablaSinCobertura,\n  ai_prompt: `ESET ${pctCobertura}% cobertura. ${amenazas} incidentes (${amenazasCriticas} alta severidad). ${tablaSinCobertura.length} equipos sin cobertura.`,\n} }]\n"
+      },
+      "id": "transform_seguridad",
+      "name": "transform_seguridad",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        976,
+        -224
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst rowsRaw = $input.all().map(i => i.json)\nif (!rowsRaw.length) return [{ json: { name: 'sla', skip: true } }]\n\n// Filtrar borrados (defensive — el SQL ya filtra)\nconst rows = rowsRaw.filter(r => r.deleted !== true && r.deleted !== 't')\n\nconst RESOLVED_STATUSES = ['Closed', 'Resuelto', 'Cerrado/Para Entregar']\nconst HIGH_PRIORITIES   = ['High', 'Urgent', 'Alta']\n\nconst totalTickets = rows.length\nconst resueltos    = rows.filter(r => RESOLVED_STATUSES.includes(r.status)).length\nconst abiertos     = totalTickets - resueltos\nconst pctResolucion = totalTickets > 0 ? Math.round((resueltos / totalTickets) * 100) : 0\n\n// **Horas reales de trabajo** = suma de FS vinculados al ticket (vista v_ticket_horas_fs, columna horas_fs).\n// Fase 1 (2026-06-03): reemplazó las latencias SLA tiempo_en_cr_h/tiempo_a_fs_h por horas-hombre reales.\nfunction workingHours(r) {\n  // Horas reales de trabajo = suma de FS vinculados al ticket (vista v_ticket_horas_fs).\n  const h = parseFloat(r.horas_fs);\n  return (!isNaN(h) && h > 0) ? h : null;\n}\n\nconst horasArr = rows.map(workingHours).filter(h => h != null && h > 0)\nconst horasPromedio = horasArr.length\n  ? Math.round((horasArr.reduce((a,b)=>a+b,0) / horasArr.length) * 10) / 10\n  : 0\nconst horasTotalesPeriodo = Math.round(horasArr.reduce((a,b)=>a+b,0) * 10) / 10\n\nconst ticketsCriticos = rows.filter(r => HIGH_PRIORITIES.includes(r.priority)).length\n\n// Distribución por categoría (solo si hay 2+)\nconst cats = {}\nrows.forEach(r => { const k = r.category || 'General'; cats[k] = (cats[k]||0)+1 })\nconst ticketsPorCategoria = Object.entries(cats).sort((a,b)=>b[1]-a[1]).slice(0,8)\n  .map(([label,value])=>({label,value}))\n\n// Distribución por técnico\nconst tecs = {}\nrows.forEach(r => { if(r.tecnico_asignado){ tecs[r.tecnico_asignado]=(tecs[r.tecnico_asignado]||0)+1 } })\nconst ticketsPorTecnico = Object.entries(tecs).sort((a,b)=>b[1]-a[1]).slice(0,8)\n  .map(([label,value])=>({label,value}))\n\n// Top 5 tickets más largos (por tiempo real trabajado)\nconst topLargos = rows\n  .map(r => ({ ticket: r.ticket_no, title: r.title || '', status: r.status, priority: r.priority || '', horas: workingHours(r) ?? 0, tecnico: r.tecnico_asignado || '—', category: r.category || '', tiposSoporte: r.tipos_soporte || [], fsNumeros: r.fs_numeros || [] }))\n  .filter(t => t.horas > 0)\n  .sort((a,b) => b.horas - a.horas)\n  .slice(0, 25)\n\n// Distribución por prioridad\nconst priCount = { High: 0, Medium: 0, Low: 0, Otros: 0 }\nrows.forEach(r => {\n  const p = r.priority || ''\n  if (p === 'High' || p === 'Urgent' || p === 'Alta') priCount.High++\n  else if (p === 'Medium' || p === 'Normal') priCount.Medium++\n  else if (p === 'Low') priCount.Low++\n  else priCount.Otros++\n})\nconst prioridades = Object.entries(priCount).filter(([,v]) => v > 0)\n  .map(([label, value]) => ({\n    label,\n    value,\n    color: label === 'High' ? '#F05754' : label === 'Medium' ? '#d4900a' : label === 'Low' ? '#43C961' : '#888',\n  }))\n\n// Score: combina pct resolución + tiempos cortos\nconst score = Math.round(\n  pctResolucion * 0.6\n  + Math.min(100, Math.max(0, 100 - Math.max(0, horasPromedio - 2) * 10)) * 0.4\n)\n\nconst charts = { prioridades: prioridades.length >= 2 ? prioridades : [] }\nif (ticketsPorCategoria.length >= 2) charts.ticketsPorCategoria = ticketsPorCategoria\nif (ticketsPorTecnico.length >= 2)   charts.ticketsPorTecnico   = ticketsPorTecnico\n\n  \n// F4 — narrativas dual\nconst narrative = `${totalTickets} tickets en el período, ${resueltos} resueltos (${pctResolucion}%), ${abiertos} abiertos al cierre. ${horasTotalesPeriodo}h de trabajo real total, promedio ${horasPromedio}h por ticket. ${ticketsCriticos} críticos.`;\nconst narrativeClient = `Se procesaron ${totalTickets} ${totalTickets === 1 ? 'solicitud técnica' : 'solicitudes técnicas'} durante el período, con un ${pctResolucion}% resuelto al cierre. El tiempo promedio de atención fue de ${horasPromedio}h por solicitud. ${ticketsCriticos > 0 ? `Se gestionaron ${ticketsCriticos} ${ticketsCriticos === 1 ? 'incidencia de alta prioridad' : 'incidencias de alta prioridad'}.` : 'No se registraron incidencias de alta prioridad.'}`;\n\nreturn [{ json: {\n  name: 'sla',\n  narrative,\n  narrativeClient,\n  score: Math.max(0, Math.min(100, score)),\n  metrics: {\n    totalTickets, resueltos, abiertos, pctResolucion,\n    horasPromedio,         // tiempo real de trabajo prom (FS / asignado-resuelto, no incluye esperas)\n    horasTotalesPeriodo,   // tiempo total trabajado en el período\n    ticketsCriticos,\n  },\n  charts,\n  tablaTopLargos: topLargos,\n  ai_prompt: `SLA: ${totalTickets} tickets, ${pctResolucion}% resueltos, ${horasPromedio}h promedio de trabajo (FS), ${ticketsCriticos} críticos.`,\n} }]\n"
+      },
+      "id": "transform_sla",
+      "name": "transform_sla",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        976,
+        48
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst hosts = $('sql_servidores').all().map(i => i.json)\nif (!hosts.length) return [{ json: { name: 'servidores', skip: true } }]\n\nlet triggers = []\ntry { triggers = $('sql_disponibilidad').all().map(i => i.json) } catch(_) {}\n\nconst total = hosts.length\n\n// Zabbix host.available: 0=unknown, 1=available, 2=unavailable\n// \"Online\" para nosotros = sin problems activos (más útil que el flag de agent)\nconst sinProblemas = hosts.filter(h => (h.problems ?? 0) === 0).length\nconst conProblemas = hosts.filter(h => (h.problems ?? 0) > 0).length\nconst accesibles   = hosts.filter(h => Number(h.available) === 1).length\nconst inaccesibles = hosts.filter(h => Number(h.available) === 2).length\nconst desconocido  = hosts.filter(h => Number(h.available) === 0 || h.available == null).length\n\nconst pctSinProblemas = total > 0 ? Math.round((sinProblemas / total) * 100) : 0\n\n// Triggers (alertas activas) por severidad\n// Zabbix priority: 0=info, 1=warning, 2=avg, 3=high, 4=disaster, 5=trigger\nconst sevHigh = triggers.filter(t => Number(t.priority) >= 4).length\nconst sevMed  = triggers.filter(t => Number(t.priority) === 3).length\nconst sevLow  = triggers.filter(t => Number(t.priority) >= 1 && Number(t.priority) <= 2).length\n\nconst severidad = []\nif (sevHigh > 0) severidad.push({ label: 'Crítica/Disaster', value: sevHigh, color: '#F05754' })\nif (sevMed > 0)  severidad.push({ label: 'High',              value: sevMed,  color: '#d4900a' })\nif (sevLow > 0)  severidad.push({ label: 'Warning/Info',      value: sevLow,  color: '#43C961' })\n\n// Tabla hosts: nombre + estado + alertas + uptime relativo\nconst tablaHosts = hosts.map(h => ({\n  host: h.host || h.name || '?',\n  problems: h.problems ?? 0,\n  status: Number(h.available) === 1 ? 'OK' : Number(h.available) === 2 ? 'Inaccesible' : 'Desconocido',\n  lastChange: h.lastchange_at || h.synced_at || null,\n})).sort((a, b) => b.problems - a.problems)\n\n// Tabla alertas activas (top 10 por severidad)\nconst tablaAlertas = triggers\n  .sort((a, b) => Number(b.priority) - Number(a.priority))\n  .slice(0, 10)\n  .map(t => ({\n    severidad: Number(t.priority) >= 4 ? 'Crítica' : Number(t.priority) === 3 ? 'High' : Number(t.priority) >= 1 ? 'Warning' : 'Info',\n    host: t.hostname || '?',\n    description: t.description || '',\n    desde: t.lastchange_at || null,\n  }))\n\n// Score: combina hosts ok + cantidad de alertas\nconst score = Math.round(Math.max(0, pctSinProblemas - sevHigh * 8 - sevMed * 3))\n\n  \n// F4 — narrativas dual\nconst _alertasTotal = sevHigh + sevMed + sevLow;\nconst narrative = `${total} servidores monitoreados, ${sinProblemas} sin problemas (${pctSinProblemas}%). ${_alertasTotal} alertas activas (${sevHigh} críticas, ${sevMed} medias, ${sevLow} bajas). ${inaccesibles} inaccesibles para Zabbix.`;\nconst narrativeClient = `Su infraestructura cuenta con ${total} ${total === 1 ? 'servidor monitoreado' : 'servidores monitoreados'} en tiempo real. ${pctSinProblemas >= 90 ? `${pctSinProblemas}% opera sin incidentes detectados.` : `${pctSinProblemas}% opera sin incidentes; el resto presenta indicadores bajo seguimiento.`} ${sevHigh > 0 ? `${sevHigh} ${sevHigh === 1 ? 'indicador crítico requiere' : 'indicadores críticos requieren'} atención inmediata, ya bajo intervención del equipo técnico.` : _alertasTotal > 0 ? `${_alertasTotal} ${_alertasTotal === 1 ? 'indicador en rango de atención' : 'indicadores en rango de atención'} están siendo evaluados.` : 'No se registran alertas activas.'}`;\n\nreturn [{ json: {\n  name: 'servidores',\n  narrative,\n  narrativeClient,\n  score,\n  metrics: {\n    total,\n    sinProblemas,\n    conProblemas,\n    accesibles,\n    inaccesibles,\n    desconocido,\n    pctSinProblemas,\n    alertasActivas: triggers.length,\n    alertasCriticas: sevHigh,\n    alertasMedias: sevMed,\n    alertasBajas: sevLow,\n  },\n  charts: {\n    severidad: severidad.length >= 2 ? severidad : [],\n  },\n  tabla: tablaHosts,\n  tablaAlertas,\n  ai_prompt: `${total} servidores Zabbix. ${sinProblemas} sin problemas (${pctSinProblemas}%). ${triggers.length} alertas activas (${sevHigh} críticas, ${sevMed} altas).`,\n} }]\n"
+      },
+      "id": "transform_servidores",
+      "name": "transform_servidores",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1184,
+        208
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst rows = $input.all().map(i => i.json)\nconst ib = (rows.length && rows[0].infra_backup) || null\n\n// Sin relevamiento → skip MÓDULO ENTERO. La recomendación de \"auditar respaldos\"\n// se genera desde assemble_informe (computeDetalle / addRec)\nif (!ib) {\n  return [{ json: { name: 'backups', skip: true } }]\n}\n\nlet serverCount = 0\ntry {\n  const cli = $('resolver_modulos').first().json\n  if (cli.zabbixGroup) serverCount = $('sql_servidores').all().length\n} catch(_) {}\n\nconst software   = ib.software || ib.tool || ib.solucion || ''\nconst frecuencia = ib.frecuencia || ib.freq || ''\nconst destino    = ib.destino || ib.target || ''\nconst tieneNube  = ib.tieneNube === true || ib.nube === true || ib.cloud === true || false\nconst cumple321  = ib.cumple321 === true || ib.regla321 === true || false\nconst observaciones = ib.observaciones || ib.notas || ib.obs || ''\nconst tieneRelev = !!software\n\nif (!tieneRelev) {\n  return [{ json: { name: 'backups', skip: true } }]\n}\n\nconst score = cumple321 ? 100 : tieneNube ? 75 : 60\n\n// F4 narrativas\nconst narrative = `Backup relevado: ${software}${frecuencia ? `, ${frecuencia}` : ''}${destino ? `, destino ${destino}` : ''}. Regla 3-2-1: ${cumple321 ? 'cumple' : 'NO cumple'}. Copia en nube: ${tieneNube ? 'sí' : 'no'}.`;\nconst narrativeClient = `Su esquema de respaldo actual utiliza ${software}${frecuencia ? ` con frecuencia ${frecuencia}` : ''}. ${cumple321 ? 'El esquema aplica el criterio de copias múltiples recomendado: varias copias, en distintos medios y una fuera de sitio.' : 'Recomendamos reforzar el esquema con copias múltiples \\u2014 varias copias, en distintos medios y una fuera de sitio \\u2014 para asegurar la recuperación de la información ante cualquier incidente.'}${tieneNube ? ' Incluye destino en la nube.' : ''}`;\n\nreturn [{ json: {\n  name: 'backups',\n  narrative,\n  narrativeClient,\n  score,\n  metrics: {\n    tieneRelevamiento: true,\n    software, frecuencia, destino, cumple321, tieneNube,\n    cantServidores: serverCount,\n  },\n  charts: {},\n  observaciones,\n  ai_prompt: `Backups: ${software}. ${frecuencia || 'N/A'}. 3-2-1: ${cumple321}. Nube: ${tieneNube}.`,\n} }]\n"
+      },
+      "id": "transform_backups",
+      "name": "transform_backups",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        976,
+        496
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "numberInputs": 6
+      },
+      "id": "merge_modules",
+      "name": "merge_modules",
+      "type": "n8n-nodes-base.merge",
+      "position": [
+        1632,
+        240
+      ],
+      "typeVersion": 3.2
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst transforms = ['transform_inventario','transform_seguridad','transform_sla',\n                    'transform_servidores','transform_backups','transform_mantenimiento']\nconst allModules = []\nfor (const t of transforms) {\n  try {\n    const items = $(t).all().map(i => i.json).filter(m => !m.skip)\n    allModules.push(...items)\n  } catch(e) {}\n}\nconst clientData = $('get_cliente').first().json\n\n// Helper: build detalle arrays para cada rec usando la data ya disponible\nfunction getInvRows() {\n  try { return $('transform_inventario').first().json.tabla || [] } catch(_) { return [] }\n}\nfunction getDetecRows() {\n  try {\n    const seg = $('transform_seguridad').first().json\n    return seg.tablaDetecciones || []\n  } catch(_) { return [] }\n}\nfunction getSwRows() {\n  try {\n    const seg = $('transform_seguridad').first().json\n    return seg.tablaSoftwareInventario || []\n  } catch(_) { return [] }\n}\nfunction getServidoresRows() {\n  try {\n    const srv = $('transform_servidores').first().json\n    return srv.tabla || []\n  } catch(_) { return [] }\n}\nfunction getAlertasRows() {\n  try {\n    const srv = $('transform_servidores').first().json\n    return srv.tablaAlertas || []\n  } catch(_) { return [] }\n}\nfunction getSlaRows() {\n  try {\n    const sla = $('transform_sla').first().json\n    return sla.tablaTopLargos || []\n  } catch(_) { return [] }\n}\n\nconst triggerData = $('webhook_trigger').first().json.body || $('webhook_trigger').first().json\n\nconst modules = {}\nfor (const m of allModules) {\n  if (m.name && m.metrics !== undefined) {\n    modules[m.name] = {\n      narrative: m.narrative ?? '',\n      score:     m.score ?? 50,\n      metrics:   m.metrics,\n      charts:    m.charts ?? {},\n      tabla:     m.tabla ?? undefined,\n    }\n    for (const k of Object.keys(m)) {\n      if (!['name','narrative','score','metrics','charts','tabla','skip','ai_prompt'].includes(k)) {\n        modules[m.name][k] = m[k]\n      }\n    }\n  }\n}\n\n// ── Mantenimiento: enriquecer filas con OCS (inventario) + ESET (seguridad) por hostname ──\n// Seguro acá: assemble corre tras merge_modules (barrera); transform_inventario/seguridad ya completaron.\nif (modules.mantenimiento) {\n  const nh = (s) => String(s || '').split('.')[0].trim().toLowerCase()\n  const invByHost = {}\n  for (const r of getInvRows()) {\n    invByHost[nh(r.hostname)] = { so: r.os, ramMb: r.ram_mb || undefined, ocsLastContact: r.ocs_last_contact || null }\n  }\n  const esetByHost = {}\n  try {\n    for (const r of ($('transform_seguridad').first().json.tablaConCobertura || [])) {\n      esetByHost[nh(r.hostname)] = r.esetStatus || null\n    }\n  } catch (_) {}\n  const enrich = (row) => {\n    const i = invByHost[nh(row.hostname)]\n    if (i) {\n      if (row.so == null && i.so) row.so = i.so\n      if (row.ramMb == null && i.ramMb != null) row.ramMb = i.ramMb\n      if (row.ocsLastContact == null) row.ocsLastContact = i.ocsLastContact\n    }\n    const es = esetByHost[nh(row.hostname)]\n    if (es != null && row.esetStatus == null) row.esetStatus = es\n    return row\n  }\n  if (Array.isArray(modules.mantenimiento.terminales)) modules.mantenimiento.terminales.forEach(enrich)\n  if (Array.isArray(modules.mantenimiento.servidores)) modules.mantenimiento.servidores.forEach(enrich)\n}\n\n// ─── Recomendaciones con doble narrativa (técnica + cliente) ─────\nconst recs = []\nconst inv = modules.inventario?.metrics\nconst sec = modules.seguridad?.metrics\nconst srv = modules.servidores?.metrics\nconst sla = modules.sla?.metrics\nconst bk  = modules.backups?.metrics\n\n// Helper: empuja rec con ambas versiones\nfunction addRec(r) { recs.push(r) }\nfunction plural(n, singular, plural) { return n === 1 ? singular : plural }\n\nif (inv) {\n  if ((inv.eolCount ?? 0) > 0) {\n    const n = inv.eolCount\n    addRec({\n      prioridad: 'alta', modulo: 'inventario', ownership: 'cliente',\n      titulo: `${n} ${plural(n,'equipo','equipos')} con SO obsoleto (EOL)`,\n      descripcion: 'Programar plan de actualización o reemplazo. Los SO EOL no reciben parches de seguridad y son vector de ataque.',\n      tituloClient: `Renovación de software base recomendada en ${n} ${plural(n,'equipo','equipos')}`,\n      descripcionClient: `Detectamos ${plural(n,'un equipo','equipos')} con sistemas operativos sin soporte vigente del fabricante. Recomendamos planificar su renovación o actualización para mantener activo el ciclo de protección.`,\n    })\n  }\n  if ((inv.stale ?? 0) > 0) {\n    const n = inv.stale\n    addRec({\n      prioridad: 'media', modulo: 'inventario', ownership: 'sti',\n      titulo: `${n} ${plural(n,'equipo','equipos')} sin contacto reciente con OCS`,\n      descripcion: 'Verificar si están activos, dados de baja, o si el agente OCS falló. Equipos zombie distorsionan métricas.',\n      tituloClient: `Reverificación de monitoreo en ${n} ${plural(n,'dispositivo','dispositivos')}`,\n      descripcionClient: `Identificamos dispositivos cuyo agente de inventario no reportó recientemente. Coordinaremos su reverificación en las próximas visitas técnicas para asegurar trazabilidad completa del parque.`,\n    })\n  }\n  if ((inv.sinEset ?? 0) > 0) {\n    const n = inv.sinEset\n    addRec({\n      prioridad: 'alta', modulo: 'inventario', ownership: 'mixta',\n      titulo: `${n} ${plural(n,'equipo','equipos')} sin licencia ESET`,\n      descripcion: 'Falta cobertura de antivirus en equipos del inventario. Asignar licencias o documentar excepciones.',\n      tituloClient: `Ampliar cobertura antimalware a ${n} ${plural(n,'dispositivo','dispositivos')}`,\n      descripcionClient: `Existen dispositivos del parque sin protección antimalware ESET asignada. Recomendamos ampliar el alcance de licencias para cerrar brechas de cobertura.`,\n    })\n  }\n}\nif (sec) {\n  if ((sec.amenazasCriticas ?? 0) > 0) {\n    const n = sec.amenazasCriticas\n    addRec({\n      prioridad: 'alta', modulo: 'seguridad', ownership: 'mixta',\n      titulo: `${n} ${plural(n,'detección crítica','detecciones críticas')} en el período`,\n      descripcion: 'Revisar detecciones de severidad alta/critical en ESET. Auditar equipos afectados y aplicar contención.',\n      tituloClient: `${n} ${plural(n,'incidente de seguridad de alta prioridad','incidentes de seguridad de alta prioridad')} detectado${n===1?'':'s'}`,\n      descripcionClient: `Se detectaron amenazas de alta severidad en el período. El equipo técnico realiza seguimiento y contención sobre los equipos involucrados.`,\n    })\n  }\n  if ((sec.statusCRITICAL ?? 0) > 0) {\n    const n = sec.statusCRITICAL\n    addRec({\n      prioridad: 'alta', modulo: 'seguridad', ownership: 'mixta',\n      titulo: `${n} ${plural(n,'equipo','equipos')} con estado ESET CRITICAL`,\n      descripcion: 'Equipos en estado CRITICAL requieren atención inmediata. Verificar consola ESET.',\n      tituloClient: `${n} ${plural(n,'equipo requiere','equipos requieren')} atención inmediata de protección`,\n      descripcionClient: `${plural(n,'Hay un dispositivo','Hay dispositivos')} en estado crítico de protección que ${plural(n,'requiere','requieren')} intervención prioritaria. Estaremos coordinando la remediación inmediata.`,\n    })\n  }\n  if ((sec.statusWARN ?? 0) > 0) {\n    const n = sec.statusWARN\n    addRec({\n      prioridad: 'media', modulo: 'seguridad', ownership: 'mixta',\n      titulo: `${n} ${plural(n,'equipo','equipos')} en estado WARN/Atención`,\n      descripcion: 'Revisar advertencias en ESET (motor desactualizado, exclusiones, eventos pendientes).',\n      tituloClient: `${n} ${plural(n,'equipo requiere','equipos requieren')} revisión de configuración de seguridad`,\n      descripcionClient: `Identificamos ${plural(n,'un dispositivo','dispositivos')} con advertencias en su configuración de protección. Revisaremos los ajustes en las próximas tareas planificadas.`,\n    })\n  }\n  if ((sec.pctReportando ?? 100) < 80 && (sec.protegidos ?? 0) > 0) {\n    addRec({\n      prioridad: 'media', modulo: 'seguridad', ownership: 'sti',\n      titulo: 'Equipos ESET sin reportar en últimos 30 días',\n      descripcion: `Solo ${sec.pctReportando}% de los equipos con licencia reportaron recientemente. Verificar conectividad o si fueron dados de baja.`,\n      tituloClient: 'Optimización de telemetría ESET en equipos no recientes',\n      descripcionClient: `Detectamos dispositivos cuyo agente ESET no reportó en los últimos 30 días. Verificaremos su conectividad y/o estado en las próximas visitas técnicas para mantener la visibilidad completa.`,\n    })\n  }\n}\nif (srv) {\n  if ((srv.alertasCriticas ?? 0) > 0) {\n    const n = srv.alertasCriticas\n    addRec({\n      prioridad: 'alta', modulo: 'servidores', ownership: 'mixta',\n      titulo: `${n} ${plural(n,'alerta crítica activa','alertas críticas activas')} en Zabbix`,\n      descripcion: 'Triggers de severidad alta activos en servidores. Atender antes de que escalen.',\n      tituloClient: `${n} ${plural(n,'indicador crítico de servidor','indicadores críticos de servidor')} requiere${n===1?'':'n'} atención`,\n      descripcionClient: `Hay ${plural(n,'una alerta crítica activa','alertas críticas activas')} en los servidores monitoreados. El equipo técnico está atendiendo la situación.`,\n    })\n  }\n  if ((srv.inaccesibles ?? 0) > 0) {\n    const n = srv.inaccesibles\n    addRec({\n      prioridad: 'alta', modulo: 'servidores', ownership: 'sti',\n      titulo: `${n} ${plural(n,'servidor inaccesible','servidores inaccesibles')} para Zabbix`,\n      descripcion: 'Servidores marcados como Inaccesibles. Verificar conectividad SNMP/Zabbix Agent o si están apagados.',\n      tituloClient: `Reverificación de monitoreo en ${n} ${plural(n,'servidor','servidores')}`,\n      descripcionClient: `Identificamos ${plural(n,'un servidor','servidores')} sin telemetría reciente. Coordinaremos la reverificación de conectividad de monitoreo para asegurar cobertura continua.`,\n    })\n  }\n}\nif (sla) {\n  if ((sla.ticketsCriticos ?? 0) > 0) {\n    const n = sla.ticketsCriticos\n    addRec({\n      prioridad: 'alta', modulo: 'sla', ownership: 'mixta',\n      titulo: `${n} ${plural(n,'ticket crítico','tickets críticos')} en el período`,\n      descripcion: 'Tickets de prioridad alta/urgente cerrados. Considerar análisis de causa raíz para evitar recurrencia.',\n      tituloClient: `${n} ${plural(n,'incidencia de alta prioridad atendida','incidencias de alta prioridad atendidas')} en el mes`,\n      descripcionClient: `Se atendieron ${plural(n,'una incidencia','incidencias')} de alta prioridad durante el período. Se analiza la causa raíz para minimizar recurrencias.`,\n    })\n  }\n  if ((sla.abiertos ?? 0) > 3) {\n    const n = sla.abiertos\n    addRec({\n      prioridad: 'media', modulo: 'sla', ownership: 'sti',\n      titulo: `${n} tickets abiertos al cierre del período`,\n      descripcion: 'Backlog elevado. Revisar priorización y carga del equipo técnico.',\n      tituloClient: `${n} solicitudes técnicas en seguimiento al cierre del período`,\n      descripcionClient: `Quedan ${n} solicitudes técnicas en curso al cierre del período. El equipo continúa su atención según prioridad y dependencias.`,\n    })\n  }\n}\n\n// Si backups esperaba relevarse (cliente con servidores monitoreados) y NO se generó → rec\nif (!modules.backups && srv && (srv.total ?? 0) > 0) {\n  const n = srv.total\n  addRec({\n    prioridad: 'alta', modulo: 'backups', ownership: 'sti',\n    titulo: 'Auditoría de respaldo pendiente',\n    descripcion: `${n} ${n === 1 ? 'servidor monitoreado' : 'servidores monitoreados'} en Zabbix pero sin diagnóstico de backup relevado en el CRM. Coordinar visita técnica para auditar el esquema de respaldo actual.`,\n    tituloClient: 'Auditoría de respaldo programada',\n    descripcionClient: `Coordinaremos una visita técnica para relevar y documentar el esquema de respaldo actual de su infraestructura.`,\n  })\n}\n\nif (bk) {\n  if (!bk.tieneRelevamiento && (bk.cantServidores ?? 0) > 0) {\n    addRec({\n      prioridad: 'alta', modulo: 'backups', ownership: 'sti',\n      titulo: 'Sin relevamiento de backups documentado',\n      descripcion: `${bk.cantServidores} ${plural(bk.cantServidores,'servidor monitoreado','servidores monitoreados')} pero sin diagnóstico de backup. Coordinar visita técnica para auditar esquema actual.`,\n      tituloClient: 'Auditoría de respaldo programada',\n      descripcionClient: `Coordinaremos una visita técnica para relevar y documentar el esquema de respaldo actual de su infraestructura.`,\n    })\n  } else if (bk.tieneRelevamiento && !bk.cumple321) {\n    addRec({\n      prioridad: 'alta', modulo: 'backups', ownership: 'cliente',\n      titulo: 'Backup no cumple regla 3-2-1',\n      descripcion: 'Diseñar esquema con 3 copias, 2 medios distintos, 1 fuera de sitio. Crítico para recuperación ante ransomware.',\n      tituloClient: 'Recomendación: esquema de respaldo bajo estándar 3-2-1',\n      descripcionClient: `El esquema de respaldo actual puede fortalecerse adoptando el estándar 3-2-1 (3 copias, 2 medios distintos, 1 fuera de sitio). Esto es clave para recuperación ante incidentes graves como ransomware.`,\n    })\n  } else if (bk.tieneRelevamiento && !bk.tieneNube) {\n    addRec({\n      prioridad: 'media', modulo: 'backups', ownership: 'cliente',\n      titulo: 'Sin copia de backup en nube',\n      descripcion: 'Agregar destino cloud (Backblaze, Wasabi, Azure) para cumplir regla 3-2-1 y protección ante desastres.',\n      tituloClient: 'Recomendación: incorporar destino cloud para respaldo',\n      descripcionClient: `Recomendamos agregar un destino en la nube al esquema de respaldo. Esto protege ante desastres físicos (incendio, robo, falla de hardware) y completa el estándar 3-2-1.`,\n    })\n  }\n}\n\n\n// Enriquecer recs con detalle (lista de items afectados, para UI expandible)\nfunction computeDetalle(rec) {\n  const inv = getInvRows()\n  if (rec.modulo === 'inventario') {\n    if (/SO obsoleto/i.test(rec.titulo)) {\n      return inv.filter(r => r.eol).map(r => ({\n        hostname: r.hostname, so: r.os, build: r.os_version, user: r.user || '',\n      }))\n    }\n    if (/sin contacto/i.test(rec.titulo)) {\n      return inv.filter(r => r.stale).map(r => ({\n        hostname: r.hostname, lastContact: r.ocs_last_contact, so: r.os, user: r.user || '',\n      }))\n    }\n    if (/sin licencia ESET/i.test(rec.titulo)) {\n      return inv.filter(r => !r.has_eset).map(r => ({\n        hostname: r.hostname, so: r.os, user: r.user || '', isServer: r.is_server,\n      }))\n    }\n  }\n  if (rec.modulo === 'seguridad') {\n    if (/detección crítica|detecciones críticas/i.test(rec.titulo)) {\n      return getDetecRows().filter(d => d.severity === 'Crítica').slice(0, 30)\n    }\n    if (/CRITICAL/i.test(rec.titulo)) {\n      return getSwRows().filter(s => s.esetStatus === 'CRITICAL').slice(0, 30)\n    }\n    if (/WARN|Atención/i.test(rec.titulo)) {\n      return getSwRows().filter(s => s.esetStatus === 'WARN' || s.esetStatus === 'ATTENTION').slice(0, 30)\n    }\n    if (/sin reportar/i.test(rec.titulo)) {\n      try { return $('transform_seguridad').first().json.tablaSinReportar || [] } catch(_) { return [] }\n    }\n  }\n  if (rec.modulo === 'servidores') {\n    if (/alerta|crítica/i.test(rec.titulo)) {\n      return getAlertasRows().slice(0, 30)\n    }\n    if (/inaccesible/i.test(rec.titulo)) {\n      return getServidoresRows().filter(s => s.status === 'Inaccesible')\n    }\n  }\n  if (rec.modulo === 'sla') {\n    if (/crítico/i.test(rec.titulo)) {\n      return getSlaRows().filter(t => t.priority === 'High' || t.priority === 'Urgent').slice(0, 30)\n    }\n    if (/abierto/i.test(rec.titulo)) {\n      return getSlaRows().filter(t => !['Closed','Resuelto','Cerrado/Para Entregar'].includes(t.status)).slice(0, 30)\n    }\n  }\n  return []\n}\nrecs.forEach(rec => { rec.detalle = computeDetalle(rec) })\n\n\nconst PRIO_ORDER = { alta: 0, media: 1, baja: 2 }\nrecs.sort((a,b) => PRIO_ORDER[a.prioridad] - PRIO_ORDER[b.prioridad])\n\nmodules.recomendaciones = {\n  narrative: recs.length === 0\n    ? 'No se detectaron problemas que requieran acción en el período.'\n    : `Se identificaron ${recs.length} ${recs.length===1?'acción recomendada':'acciones recomendadas'} (${recs.filter(r=>r.prioridad==='alta').length} de prioridad alta).`,\n  narrativeClient: recs.length === 0\n    ? 'No se detectaron oportunidades de mejora prioritarias en el período.'\n    : `Se identificaron ${recs.length} ${recs.length===1?'oportunidad de mejora':'oportunidades de mejora'} para el período. ${recs.filter(r=>r.prioridad==='alta').length>0 ? `${recs.filter(r=>r.prioridad==='alta').length} ${plural(recs.filter(r=>r.prioridad==='alta').length,'requiere','requieren')} atención prioritaria.` : 'Todas son de prioridad media o estándar.'}`,\n  score: Math.max(0, 100 - recs.filter(r=>r.prioridad==='alta').length * 10 - recs.filter(r=>r.prioridad==='media').length * 5),\n  metrics: { items: recs },\n  charts: {},\n}\n\n// F: respetar la lista de módulos pedida por el user\nconst requestedMods = Array.isArray(triggerData.modulos) ? triggerData.modulos : null\nif (requestedMods && requestedMods.length > 0) {\n  for (const key of Object.keys(modules)) {\n    if (!requestedMods.includes(key)) delete modules[key]\n  }\n}\n\nconst WEIGHTS = { inventario:0.25, seguridad:0.20, sla:0.20, servidores:0.25, backups:0.10, mantenimiento:0.15 }\nconst presentes = Object.entries(WEIGHTS).filter(([n]) => modules[n] && !(n === 'mantenimiento' && modules[n].metrics && modules[n].metrics.sinDatos))\nconst pesoTotal = presentes.reduce((s,[,p]) => s+p, 0)\nlet healthScore = pesoTotal > 0\n  ? Math.round(presentes.reduce((s,[n,p]) => s + modules[n].score * p, 0) / pesoTotal)\n  : 0\n\n// Diagnostico (madurez/seguridad) -- blend opcional del ultimo diagnostico definitivo\nlet diagScore = null, diagNivel = null, diagFecha = null\ntry {\n  const dg = $('sql_diagnostico').first().json\n  if (dg && dg.score_total != null) {\n    diagScore = Number(dg.score_total)\n    diagNivel = dg.nivel_riesgo ?? null\n    diagFecha = dg.created_at ? String(dg.created_at).slice(0,10) : null\n  }\n} catch(_) {}\nif (diagScore != null && pesoTotal > 0) {\n  const PESO_DIAG = 0.20\n  healthScore = Math.round(healthScore * (1 - PESO_DIAG) + diagScore * PESO_DIAG)\n}\n\nconst invM = modules.inventario?.metrics ?? {}\nconst secM = modules.seguridad?.metrics  ?? {}\nconst srvM = modules.servidores?.metrics ?? {}\nconst slaM = modules.sla?.metrics        ?? {}\n\n\n// ── Reconciliación de equipos: contrato (Vtiger) vs detectado (OCS/ESET/Mant) ──\n// Unión por hostname (normalizado, sin dominio). Un equipo puede estar en una\n// consola y no en otra, o sólo en la planilla de mantenimiento — todos cuentan.\nconst _normH = (h) => String(h || '').trim().toLowerCase().replace(/\\.(local|lan|internal|ad)$/, '')\nconst _hosts = {}\nfunction _addHost(host, src, isSrv) {\n  const h = _normH(host); if (!h) return\n  const e = _hosts[h] = _hosts[h] || { ocs:false, eset:false, mant:false, srv:false }\n  e[src] = true\n  if (isSrv) e.srv = true\n}\ntry {\n  for (const r of (modules.inventario ? getInvRows() : [])) {\n    _addHost(r.hostname, 'ocs', !!r.is_server)\n    if (r.has_eset) { const h = _normH(r.hostname); if (_hosts[h]) _hosts[h].eset = true }\n  }\n} catch(_) {}\nconst _mant = modules.mantenimiento\nif (_mant) {\n  for (const t of (_mant.terminales || [])) _addHost(t.hostname, 'mant', false)\n  for (const s of (_mant.servidores || [])) _addHost(s.hostname, 'mant', true)\n}\nconst _entries = Object.entries(_hosts)\nconst _servers = _entries.filter(([, e]) => e.srv)\nconst _estaciones = _entries.filter(([, e]) => !e.srv)\nconst _ci = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }\nconst _contratoSrv = _ci(clientData.contrato_servidores) + _ci(clientData.contrato_servidores_virt)\nconst _contratoEst = _ci(clientData.contrato_estaciones)\nconst reconciliacion = {\n  servidores: {\n    contrato: _contratoSrv || null,\n    contratoFisicos: clientData.contrato_servidores != null ? _ci(clientData.contrato_servidores) : null,\n    contratoVirtuales: clientData.contrato_servidores_virt != null ? _ci(clientData.contrato_servidores_virt) : null,\n    detectados: _servers.length,\n    faltan: _contratoSrv ? Math.max(0, _contratoSrv - _servers.length) : 0,\n    sobran: _contratoSrv ? Math.max(0, _servers.length - _contratoSrv) : 0,\n    lista: _servers.map(([h, e]) => ({ hostname: h, ocs: e.ocs, eset: e.eset, mant: e.mant })),\n  },\n  estaciones: {\n    contrato: _contratoEst || null,\n    detectados: _estaciones.length,\n    faltan: _contratoEst ? Math.max(0, _contratoEst - _estaciones.length) : 0,\n    sobran: _contratoEst ? Math.max(0, _estaciones.length - _contratoEst) : 0,\n  },\n  fuentes: {\n    ocs: _entries.filter(([, e]) => e.ocs).length,\n    eset: _entries.filter(([, e]) => e.eset).length,\n    mant: _entries.filter(([, e]) => e.mant).length,\n    zabbix: srvM.total ?? 0,\n  },\n  // Discrepancias por hostname (para auditar consola vs mantenimiento).\n  enConsolaNoMant: _entries.filter(([, e]) => (e.ocs || e.eset) && !e.mant).map(([h]) => h).slice(0, 60),\n  enMantNoConsola: _entries.filter(([, e]) => e.mant && !(e.ocs || e.eset)).map(([h]) => h).slice(0, 60),\n}\n\nconst kpis = {\n  uptime:     srvM.pctSinProblemas ?? null,\n  tickets:    slaM.totalTickets     ?? 0,\n  alertas:    (srvM.alertasActivas ?? 0) + (secM.amenazasCriticas ?? 0),\n  servidores: (reconciliacion.servidores.detectados || _contratoSrv || (srvM.total ?? 0)),\n  eolHw:      invM.eolCount         ?? 0,\n}\n\nconst healthBreakdown = {}\nfor (const [n] of presentes) healthBreakdown[n] = modules[n].score\nif (diagScore != null) healthBreakdown.diagnostico = diagScore\n\nconst periodo = triggerData.periodo ?? new Date().toISOString().slice(0,7)\n\n\n// ── TL;DR Executive Summary ──\nconst altas = recs.filter(r => r.prioridad === 'alta')\nconst tlDrBullets = []\n// Lo mejor (positivo)\nif (kpis.uptime != null && kpis.uptime >= 95) {\n  tlDrBullets.push({ tone: 'good', text: `Servidores con ${kpis.uptime}% sin incidentes en el período.` })\n} else if (kpis.alertas === 0) {\n  tlDrBullets.push({ tone: 'good', text: 'Sin alertas activas en infraestructura.' })\n}\nconst _slaTl = modules.sla?.metrics\nif (_slaTl && _slaTl.pctResolucion >= 90) {\n  tlDrBullets.push({ tone: 'good', text: `${_slaTl.pctResolucion}% de tickets resueltos (${_slaTl.resueltos}/${_slaTl.totalTickets}).` })\n}\n// Lo crítico\nif (altas.length > 0) {\n  tlDrBullets.push({ tone: 'critical', text: `${altas.length} ${altas.length === 1 ? 'acción crítica pendiente' : 'acciones críticas pendientes'} de prioridad alta.` })\n}\nconst _invTl = modules.inventario?.metrics\nif (_invTl && _invTl.eolCount > 0) {\n  tlDrBullets.push({ tone: 'warning', text: `${_invTl.eolCount} ${_invTl.eolCount === 1 ? 'equipo en EOL' : 'equipos en EOL'} sin soporte del fabricante.` })\n}\n// Próxima acción\nif (recs.length > 0) {\n  const top = recs[0]\n  tlDrBullets.push({ tone: 'next', text: `Próxima acción: ${top.titulo}.` })\n}\nif (diagScore != null) {\n  tlDrBullets.push({ tone: diagScore >= 70 ? 'good' : diagScore >= 45 ? 'warning' : 'critical',\n    text: `Madurez de seguridad: ${diagScore}/100${diagFecha ? ` (diagnóstico ${diagFecha})` : ''}.` })\n}\nconst tlDr = {\n  healthScore,\n  bullets: tlDrBullets.slice(0, 5),\n}\nmodules.__tldr = tlDr\n\nreturn [{ json: {\n  nc:              clientData.nombreCorto,\n  periodo,\n  tipo:            triggerData.tipo ?? 'mensual',\n  generadoAt:      new Date().toISOString(),\n  healthScore,\n  healthBreakdown,\n  kpis,\n  modules,\n  reconciliacion,\n  _meta: {\n    informeId: triggerData.informeId,\n    modulos:   Object.keys(modules),\n  }\n} }]\n"
+      },
+      "id": "assemble_informe",
+      "name": "assemble_informe",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        2048,
+        432
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://your-report-server.example.com/api/informes/{{ $('assemble_informe').first().json.nc }}/{{ $('assemble_informe').first().json._meta.informeId }}/report-data",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-n8n-secret",
+              "value": "CHANGE_ME_CALLBACK_SECRET"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "reportData",
+              "value": "={{ $json }}"
+            },
+            {
+              "name": "estado",
+              "value": "ok"
+            },
+            {
+              "name": "modulos",
+              "value": "={{ $json._meta.modulos }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "patch_crm",
+      "name": "patch_crm",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        2272,
+        432
+      ],
+      "typeVersion": 4.4
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "respond_webhook",
+      "name": "respond_webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        2496,
+        432
+      ],
+      "typeVersion": 1.1
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT display_name, description, severity, status, device_count, create_time FROM msp_cache.cache_eset_incidentes WHERE LOWER(eset_email) = LOWER('{{ String($(\"resolver_modulos\").first().json.esetEmail || '').replace(/'/g, \"''\") }}') AND status = 'INCIDENT_STATUS_OPEN' AND synced_at > NOW() - INTERVAL '25 hours' AND create_time >= NOW() - INTERVAL '180 days' ORDER BY create_time DESC",
+        "options": {}
+      },
+      "id": "sqlincidentes0001node",
+      "name": "sql_incidentes",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        752,
+        -96
+      ],
+      "typeVersion": 2.6,
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  (SELECT score_total FROM crm_cache.diagnosticos WHERE nc = '{{ String($('get_cliente').first().json.nombreCorto || '').replace(/'/g, \"''\") }}' AND borrador = false ORDER BY created_at DESC LIMIT 1) AS score_total,\n  (SELECT nivel_riesgo FROM crm_cache.diagnosticos WHERE nc = '{{ String($('get_cliente').first().json.nombreCorto || '').replace(/'/g, \"''\") }}' AND borrador = false ORDER BY created_at DESC LIMIT 1) AS nivel_riesgo,\n  (SELECT created_at FROM crm_cache.diagnosticos WHERE nc = '{{ String($('get_cliente').first().json.nombreCorto || '').replace(/'/g, \"''\") }}' AND borrador = false ORDER BY created_at DESC LIMIT 1) AS created_at",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        752,
+        672
+      ],
+      "id": "5a9c659e-9c15-44b9-ae65-cc736226b40d",
+      "name": "sql_diagnostico",
+      "credentials": {
+        "postgres": {
+          "id": "postgres-crm",
+          "name": "postgres-crm"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://your-report-server.example.com/api/informes/{{ $('resolver_modulos').first().json.nombreCorto }}/mantenimientos",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-n8n-secret",
+              "value": "CHANGE_ME_CALLBACK_SECRET"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ scope: (($('webhook_trigger').first().json.body||{}).tipo==='mantenimiento-terminales'?'terminales':(($('webhook_trigger').first().json.body||{}).tipo==='mantenimiento-servidores'?'servidores':'ambos')), periodo: (($('webhook_trigger').first().json.body||{}).periodo||undefined) }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        752,
+        352
+      ],
+      "id": "afe5992c-cd1f-4c1e-bcd4-041fcedabb76",
+      "name": "http_mantenimientos"
+    },
+    {
+      "parameters": {
+        "jsCode": "// transform_mantenimiento — input directo: http_mantenimientos (respuesta del endpoint CRM)\n// El merge OCS/ESET por hostname se hace en assemble_informe (donde la lectura de\n// transform_inventario/transform_seguridad es segura por ordering). Ver regla\n// feedback_n8n_exec_order_not_connection_order: un Code node solo lee su INPUT directo.\ntry {\n  const tg = $('webhook_trigger').first().json.body || $('webhook_trigger').first().json\n  const tipo = tg.tipo || ''\n  const mods = Array.isArray(tg.modulos) ? tg.modulos : null\n\n  // Gate: solo emitir el módulo si el informe lo pidió (tipo standalone o módulo seleccionado).\n  // Mantenimiento NO está en presets default → si no se pidió, skip (no contamina healthScore).\n  const requested =\n    tipo === 'mantenimiento-terminales' ||\n    tipo === 'mantenimiento-servidores' ||\n    (mods && mods.includes('mantenimiento'))\n  if (!requested) return [{ json: { name: 'mantenimiento', skip: true } }]\n\n  const resp = $input.first().json || {}\n  const mant = resp && resp.ok && resp.mantenimiento ? resp.mantenimiento : null\n\n  // Endpoint falló (404/503/timeout con neverError) o sin payload → módulo sin datos.\n  const metrics = mant && mant.metrics\n    ? mant.metrics\n    : { sinDatos: true, fecha: null, usadoFallback: false, tecnico: null,\n        terminalesTotal: 0, terminalesAlDia: 0, terminalesAtrasados: 0, pctTerminales: 0,\n        servidoresTotal: 0, servidoresOk: 0, pctServidores: 0 }\n\n  const m = metrics\n  const narrative = m.sinDatos\n    ? 'Sin datos de mantenimiento para el período.'\n    : `Mantenimiento ${m.fecha || ''}${m.usadoFallback ? ' (última ronda disponible)' : ''}: ` +\n      `${m.terminalesAlDia}/${m.terminalesTotal} terminales al día (${m.pctTerminales}%), ` +\n      `${m.servidoresOk}/${m.servidoresTotal} servidores OK (${m.pctServidores}%).` +\n      `${m.tecnico ? ` Técnico: ${m.tecnico}.` : ''}`\n  const narrativeClient = m.sinDatos\n    ? 'No se registró una ronda de mantenimiento preventivo en el período.'\n    : `Se realizó mantenimiento preventivo sobre ${m.terminalesTotal} ` +\n      `${m.terminalesTotal === 1 ? 'equipo' : 'equipos'}` +\n      `${m.servidoresTotal ? ` y ${m.servidoresTotal} ${m.servidoresTotal === 1 ? 'servidor' : 'servidores'}` : ''}. ` +\n      `${m.pctTerminales}% de los equipos quedaron al día.`\n\n  return [{ json: {\n    name: 'mantenimiento',\n    narrative,\n    narrativeClient,\n    score: (mant && typeof mant.score === 'number') ? mant.score : 0,\n    metrics,\n    charts: {},\n    terminales: (mant && mant.terminales) || [],\n    servidores: (mant && mant.servidores) || [],\n    // Contrato Vtiger (frecuencia + cantidades) para al-día y reconciliación.\n    frecuencia: (mant && mant.frecuencia) || null,\n    contrato: (mant && mant.contrato) || null,\n    ai_prompt: `Mantenimiento: ${m.terminalesAlDia}/${m.terminalesTotal} terminales al día, ${m.servidoresOk}/${m.servidoresTotal} servidores OK. Score ${(mant && mant.score) ?? 0}/100.`,\n  } }]\n} catch (e) {\n  throw new Error(`[report-generation] transform_mantenimiento: ${e.message}`)\n}\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        976,
+        352
+      ],
+      "id": "6a046bf2-4c63-4d50-b753-70edfc7cd8dc",
+      "name": "transform_mantenimiento"
+    }
+  ],
+  "connections": {
+    "webhook_trigger": {
+      "main": [
+        [
+          {
+            "node": "get_cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_cliente": {
+      "main": [
+        [
+          {
+            "node": "resolver_modulos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "resolver_modulos": {
+      "main": [
+        [
+          {
+            "node": "sql_incidentes",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "sql_inventario",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "sql_seguridad",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "sql_sla",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "sql_servidores",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "sql_backups",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "sql_diagnostico",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "http_mantenimientos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "sql_inventario": {
+      "main": [
+        [
+          {
+            "node": "transform_inventario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "sql_seguridad": {
+      "main": [
+        [
+          {
+            "node": "transform_seguridad",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "sql_sla": {
+      "main": [
+        [
+          {
+            "node": "transform_sla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "sql_servidores": {
+      "main": [
+        [
+          {
+            "node": "sql_disponibilidad",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "sql_disponibilidad": {
+      "main": [
+        [
+          {
+            "node": "transform_servidores",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "sql_backups": {
+      "main": [
+        [
+          {
+            "node": "transform_backups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "transform_inventario": {
+      "main": [
+        [
+          {
+            "node": "merge_modules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "transform_seguridad": {
+      "main": [
+        [
+          {
+            "node": "merge_modules",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "transform_sla": {
+      "main": [
+        [
+          {
+            "node": "merge_modules",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "transform_servidores": {
+      "main": [
+        [
+          {
+            "node": "merge_modules",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "transform_backups": {
+      "main": [
+        [
+          {
+            "node": "merge_modules",
+            "type": "main",
+            "index": 5
+          }
+        ]
+      ]
+    },
+    "merge_modules": {
+      "main": [
+        [
+          {
+            "node": "assemble_informe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "assemble_informe": {
+      "main": [
+        [
+          {
+            "node": "patch_crm",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "patch_crm": {
+      "main": [
+        [
+          {
+            "node": "respond_webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "sql_incidentes": {
+      "main": [
+        [
+          {
+            "node": "transform_seguridad",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "sql_diagnostico": {
+      "main": [
+        [
+          {
+            "node": "assemble_informe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "http_mantenimientos": {
+      "main": [
+        [
+          {
+            "node": "transform_mantenimiento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "transform_mantenimiento": {
+      "main": [
+        [
+          {
+            "node": "merge_modules",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "binaryMode": "separate",
+    "timezone": "America/Argentina/Buenos_Aires",
+    "saveDataSuccessExecution": "all"
+  },
+  "pinData": {}
+}

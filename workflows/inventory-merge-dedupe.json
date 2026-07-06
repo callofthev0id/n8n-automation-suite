@@ -1,0 +1,90 @@
+{
+  "name": "inventory-merge-dedupe",
+  "active": false,
+  "nodes": [
+    {
+      "id": "01-schedule-trigger",
+      "name": "Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6,18 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "02-manual-trigger",
+      "name": "Manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        480
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "03-pg-merge",
+      "name": "PG Sincro Inventario",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        560,
+        390
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DO $do$\nDECLARE\n  got_lock boolean;\nBEGIN\n  got_lock := pg_try_advisory_xact_lock(429552);\n  IF NOT got_lock THEN\n    RAISE NOTICE 'cache_inventario: otra sync en curso, skipping';\n    RETURN;\n  END IF;\n\n  -- Step 1: upsert filas OCS (incluye hardware_uuid SMBIOS).\n  INSERT INTO msp_cache.cache_inventario (\n    workgroup, hostname, mac, bios_serial, hardware_uuid,\n    os, os_version, cpu, cpu_cores, cpu_speed_mhz, ram_mb, disk_gb, disk_type,\n    ip, ocs_id, ocs_last_contact, ocs_username,\n    source\n  )\n  SELECT DISTINCT ON (\n    ocs.workgroup,\n    COALESCE(NULLIF(UPPER(REPLACE(ocs.mac, '-', ':')), ''), ''),\n    COALESCE(NULLIF(ocs.bios_serial, ''), ''),\n    ocs.name\n  )\n    ocs.workgroup,\n    ocs.name,\n    NULLIF(UPPER(REPLACE(ocs.mac, '-', ':')), ''),\n    NULLIF(ocs.bios_serial, ''),\n    NULLIF(ocs.hardware_uuid, ''),\n    ocs.os, ocs.os_version, ocs.cpu, ocs.cpu_cores, ocs.cpu_speed_mhz,\n    ocs.ram_mb, ocs.disk_gb, ocs.disk_type,\n    -- Aceptar IP en notación CIDR (X.X.X.X/N) — OCS usa eso\n    CASE\n      WHEN ocs.ip ~ '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+(/[0-9]+)?$' THEN ocs.ip::inet\n      ELSE NULL\n    END,\n    ocs.ocs_id, ocs.last_contact, ocs.username,\n    'ocs-only'\n  FROM msp_cache.cache_ocs_computers ocs\n  WHERE ocs.workgroup IS NOT NULL AND ocs.workgroup <> ''\n  ORDER BY\n    ocs.workgroup,\n    COALESCE(NULLIF(UPPER(REPLACE(ocs.mac, '-', ':')), ''), ''),\n    COALESCE(NULLIF(ocs.bios_serial, ''), ''),\n    ocs.name,\n    ocs.last_contact DESC NULLS LAST\n  ON CONFLICT (workgroup, COALESCE(mac, ''), COALESCE(bios_serial, ''), hostname) DO UPDATE SET\n    os = EXCLUDED.os, os_version = EXCLUDED.os_version,\n    cpu = EXCLUDED.cpu, cpu_cores = EXCLUDED.cpu_cores,\n    cpu_speed_mhz = EXCLUDED.cpu_speed_mhz, ram_mb = EXCLUDED.ram_mb,\n    disk_gb = EXCLUDED.disk_gb, disk_type = EXCLUDED.disk_type,\n    ip = EXCLUDED.ip, ocs_id = EXCLUDED.ocs_id,\n    ocs_last_contact = EXCLUDED.ocs_last_contact,\n    ocs_username = EXCLUDED.ocs_username,\n    hardware_uuid = EXCLUDED.hardware_uuid,\n    source = CASE WHEN msp_cache.cache_inventario.eset_uuid IS NOT NULL THEN 'merged' ELSE 'ocs-only' END,\n    synced_at = NOW();\n\n  -- ESTRATEGIA DE MATCHING:\n  --   PRIMARIO:   hardware_uuid (SMBIOS UUID, ESET vía hardwareProfiles[].bios.uuid)\n  --   SECUNDARIO: MAC (con OUI virtuales filtradas)\n  --   TERCIARIO:  hostname-short SCOPED por cliente (workgroup ↔ eset_email)\n  --   DESCARTADO: bios_serial (~0 matches por OEM garbage en OCS)\n\n  -- Step 2a: enrich por hardware_uuid (PRIMARIO).\n  UPDATE msp_cache.cache_inventario inv SET\n    eset_uuid = ed.uuid, eset_display_name = ed.display_name,\n    eset_last_seen = ed.last_seen, eset_status = ed.status,\n    eset_threats = ed.threats, eset_products = ed.products,\n    eset_email = ed.eset_email,\n    source = 'merged', source_match = 'uuid', synced_at = NOW()\n  FROM msp_cache.cache_eset_devices ed\n  WHERE inv.hardware_uuid IS NOT NULL AND LENGTH(inv.hardware_uuid) >= 8\n    AND ed.hardware_uuid IS NOT NULL AND LENGTH(ed.hardware_uuid) >= 8\n    AND UPPER(TRIM(inv.hardware_uuid)) = UPPER(TRIM(ed.hardware_uuid))\n    AND inv.eset_uuid IS NULL;\n\n  -- Step 2b: enrich por MAC (secundario). Filtra MACs virtuales (VPN, hypervisor)\n  -- que se duplican entre máquinas y romperían el matching, y dedupea con\n  -- DISTINCT ON ambos lados para evitar el \"ON CONFLICT cannot affect row twice\".\n  WITH unique_mac_ocs AS (\n    SELECT DISTINCT ON (mac) inv_id, mac\n    FROM msp_cache.cache_inventario\n    WHERE mac IS NOT NULL AND LENGTH(mac) >= 11 AND eset_uuid IS NULL\n      AND mac NOT LIKE '00:09:0F:%' AND mac NOT LIKE '00:15:5D:%'\n      AND mac NOT LIKE '00:50:56:%' AND mac NOT LIKE '00:0C:29:%'\n      AND mac NOT LIKE '52:54:00:%' AND mac NOT LIKE '00:1C:42:%'\n      AND mac NOT LIKE '08:00:27:%'\n    ORDER BY mac, inv_id\n  ),\n  unique_mac_eset AS (\n    SELECT DISTINCT ON (UPPER(REPLACE(mac, '-', ':')))\n      UPPER(REPLACE(mac, '-', ':')) AS mac_norm,\n      uuid, display_name, last_seen, status, threats, products, eset_email\n    FROM msp_cache.cache_eset_devices\n    WHERE mac IS NOT NULL AND mac <> '' AND mac <> '—'\n    ORDER BY UPPER(REPLACE(mac, '-', ':')), uuid\n  )\n  UPDATE msp_cache.cache_inventario inv SET\n    eset_uuid = ed.uuid, eset_display_name = ed.display_name,\n    eset_last_seen = ed.last_seen, eset_status = ed.status,\n    eset_threats = ed.threats, eset_products = ed.products,\n    eset_email = ed.eset_email,\n    source = 'merged', source_match = 'mac', synced_at = NOW()\n  FROM unique_mac_ocs umo\n  JOIN unique_mac_eset ed ON ed.mac_norm = umo.mac\n  WHERE inv.inv_id = umo.inv_id;\n\n  -- Step 2c: hostname-short SCOPED por cliente.\n  -- Fallback cuando UUID y MAC fallaron. Limita el match a hostnames-short\n  -- dentro del mismo cliente (workgroup OCS ↔ eset_email mapping). Reduce\n  -- el riesgo de hostname collision: dos PCs en clientes distintos pueden\n  -- llamarse PC01 sin que se mezclen, ya que el scope los aísla.\n  WITH cliente_scope AS (\n    -- workflow n8n inyecta este mapping desde crm_cache.cliente vía dblink.\n    -- Acá usamos heurístico: lower(eset_email) empieza con lower(workgroup)+'%@'.\n    SELECT DISTINCT\n      inv.workgroup AS ocs_workgroup,\n      ed.eset_email\n    FROM msp_cache.cache_inventario inv\n    CROSS JOIN msp_cache.cache_eset_devices ed\n    WHERE inv.workgroup <> 'unknown-eset'\n      AND ed.eset_email IS NOT NULL\n      AND LOWER(ed.eset_email) LIKE LOWER(inv.workgroup) || '%@%'\n  ),\n  candidatos AS (\n    SELECT inv.inv_id, ed.uuid, ed.display_name, ed.last_seen, ed.status,\n           ed.threats, ed.products, ed.eset_email\n    FROM msp_cache.cache_inventario inv\n    JOIN cliente_scope cs ON cs.ocs_workgroup = inv.workgroup\n    JOIN msp_cache.cache_eset_devices ed ON ed.eset_email = cs.eset_email\n    WHERE inv.eset_uuid IS NULL\n      AND LOWER(SPLIT_PART(TRIM(inv.hostname), '.', 1)) =\n          LOWER(SPLIT_PART(TRIM(ed.display_name), '.', 1))\n      AND NOT EXISTS (\n        SELECT 1 FROM msp_cache.cache_inventario inv2 WHERE inv2.eset_uuid = ed.uuid\n      )\n  ),\n  unique_candidatos AS (\n    SELECT DISTINCT ON (uuid) inv_id, uuid, display_name, last_seen, status,\n                              threats, products, eset_email\n    FROM candidatos ORDER BY uuid, inv_id\n  )\n  UPDATE msp_cache.cache_inventario inv SET\n    eset_uuid = c.uuid, eset_display_name = c.display_name,\n    eset_last_seen = c.last_seen, eset_status = c.status,\n    eset_threats = c.threats, eset_products = c.products,\n    eset_email = c.eset_email,\n    source = 'merged', source_match = 'hostname', synced_at = NOW()\n  FROM unique_candidatos c\n  WHERE inv.inv_id = c.inv_id;\n\n  -- Step 3: ESET-only (sin match en OCS).\n  INSERT INTO msp_cache.cache_inventario (\n    workgroup, hostname, mac, eset_uuid, eset_display_name,\n    eset_last_seen, eset_status, eset_threats, eset_products, eset_email,\n    source\n  )\n  SELECT DISTINCT ON (\n    COALESCE(NULLIF(UPPER(REPLACE(ed.mac, '-', ':')), ''), ''),\n    COALESCE(ed.display_name, '(sin nombre)')\n  )\n    'unknown-eset',\n    COALESCE(ed.display_name, '(sin nombre)'),\n    NULLIF(UPPER(REPLACE(ed.mac, '-', ':')), ''),\n    ed.uuid, ed.display_name, ed.last_seen, ed.status, ed.threats, ed.products,\n    ed.eset_email, 'eset-only'\n  FROM msp_cache.cache_eset_devices ed\n  WHERE NOT EXISTS (\n    SELECT 1 FROM msp_cache.cache_inventario inv WHERE inv.eset_uuid = ed.uuid\n  )\n  ORDER BY\n    COALESCE(NULLIF(UPPER(REPLACE(ed.mac, '-', ':')), ''), ''),\n    COALESCE(ed.display_name, '(sin nombre)'),\n    ed.last_seen DESC NULLS LAST\n  ON CONFLICT DO NOTHING;\n  -- Step 4: detecciones (replace all) — GUARD anti-truncate (fix B2 2026-06-08):\n  -- no truncar si la fuente cache_eset_detections esta stale (>48h o vacia),\n  -- para no borrar el ultimo dato bueno. Con sincro_eset_detections (05:00) fresca, procede normal.\n  IF (SELECT now() - max(synced_at) FROM msp_cache.cache_eset_detections) < interval '48 hours' THEN\n    TRUNCATE msp_cache.cache_inventario_detecciones;\n    INSERT INTO msp_cache.cache_inventario_detecciones (inv_id, eset_uuid, category, severity, occur_time)\n    SELECT inv.inv_id, det.uuid, det.category, det.severity, det.occur_time\n    FROM msp_cache.cache_eset_detections det\n    JOIN msp_cache.cache_inventario inv ON inv.eset_uuid = det.device_uuid;\n  ELSE\n    RAISE WARNING 'cache_eset_detections stale (max synced_at %); skip truncate, keep last good',\n      (SELECT max(synced_at) FROM msp_cache.cache_eset_detections);\n  END IF;\nEND\n$do$;\n",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "postgres-main",
+          "name": "postgres-main"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule": {
+      "main": [
+        [
+          {
+            "node": "PG Sincro Inventario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual": {
+      "main": [
+        [
+          {
+            "node": "PG Sincro Inventario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "America/Argentina/Buenos_Aires",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "executionOrder": "v1",
+    "executionTimeout": 600
+  },
+  "pinData": {}
+}
