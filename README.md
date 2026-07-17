@@ -1,5 +1,5 @@
 ```
-lautaro@v0id:~/n8n-automation-suite$
+lautaro@v0id:~/n8n-automation-suite$ n8n import:workflow --separate --input=./workflows
 ```
 
 # n8n Automation Suite for MSP Operations
@@ -111,18 +111,17 @@ A small reusable dedup gate: takes a message ID, attempts a `SET NX` in Redis wi
 
 ## Stack
 
-- **Orchestration**: n8n (self-hosted)
-- **Database**: PostgreSQL (reporting cache), MySQL (legacy CRM, read-only source)
-- **Monitoring/inventory sources**: OCS Inventory NG, ESET PROTECT Cloud API, Zabbix
-- **Messaging**: Evolution API (WhatsApp)
-- **AI/LLM**: Google Gemini and OpenRouter as LangChain chat models, Redis for agent session memory and message dedup
-- **Backup target**: GitHub Contents API
+```
+n8n · PostgreSQL · MySQL · Redis · LangChain (Gemini + OpenRouter) · Evolution API · OCS Inventory NG · ESET PROTECT · Zabbix · GitHub Contents API
+```
+
+Postgres holds the reporting cache. MySQL is the legacy CRM, read-only source. Redis backs agent session memory and WhatsApp message dedup. The backup workflow writes to a GitHub repo through the Contents API.
 
 ## Setup
 
 These are n8n workflow exports, not a standalone application. To run them:
 
-1. Import each `workflows/*.json` file into an n8n instance (`Import from File`). All eleven ship with `active: false`, since they reference placeholder credentials that don't exist yet in a fresh instance.
+1. Import the workflows, either one by one from the n8n UI (`Import from File`) or all at once from the CLI: `n8n import:workflow --separate --input=./workflows`. All eleven ship with `active: false`, since they reference placeholder credentials that don't exist yet in a fresh instance.
 2. Create the following credentials in n8n and reassign them on each imported workflow:
    - `postgres-main` / `postgres-crm` (PostgreSQL)
    - `mysql-crm-legacy` (MySQL)
