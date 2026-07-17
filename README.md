@@ -1,5 +1,5 @@
 ```
-lautaro@v0id:~/n8n-automation-suite$ n8n import:workflow --separate --input=./workflows
+n8n import:workflow --separate --input=./workflows
 ```
 
 # n8n Automation Suite for MSP Operations
