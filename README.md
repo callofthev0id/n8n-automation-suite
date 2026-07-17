@@ -1,8 +1,14 @@
+```
+lautaro@v0id:~/n8n-automation-suite$
+```
+
 # n8n Automation Suite for MSP Operations
 
-A set of production-grade n8n workflows extracted from a real managed service provider (MSP) automation stack. They cover asset inventory reconciliation across multiple monitoring tools, on-demand report generation with a webhook/callback pattern, ticket sync from a legacy CRM, proactive notifications, monitoring ingestion, self-backup of the automation layer itself, and a WhatsApp-based AI agent stack (conversational NOC assistant, LLM-as-judge inventory reconciliation, dedup subworkflow).
+![n8n](https://img.shields.io/badge/n8n-EA4B71?style=flat-square&logo=n8n&logoColor=white) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white) ![MySQL](https://img.shields.io/badge/MySQL-4479A1?style=flat-square&logo=mysql&logoColor=white) ![Redis](https://img.shields.io/badge/Redis-DC382D?style=flat-square&logo=redis&logoColor=white) ![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black) ![LangChain](https://img.shields.io/badge/LangChain-1C3C3C?style=flat-square&logo=langchain&logoColor=white) ![GitHub API](https://img.shields.io/badge/GitHub_API-181717?style=flat-square&logo=github&logoColor=white)
 
-This is a curated, sanitized subset of a larger private system. All hostnames, credentials, and tenant-specific data have been replaced with placeholders. The SQL, control flow, and data-shaping logic are unmodified and reflect how the workflows actually run in production.
+A set of n8n workflows extracted from a managed service provider (MSP) automation stack that runs in production. They cover asset inventory reconciliation across multiple monitoring tools, on-demand report generation with a webhook/callback pattern, ticket sync from a legacy CRM, proactive notifications, monitoring ingestion, self-backup of the automation layer itself, and a WhatsApp-based AI agent stack (conversational NOC assistant, LLM-as-judge inventory reconciliation, dedup subworkflow).
+
+This is a curated, sanitized subset of a larger private system. All hostnames, credentials, and tenant-specific data have been replaced with placeholders. The SQL, control flow, and data-shaping logic are unmodified and reflect how the workflows actually run.
 
 ## Why this exists
 
@@ -129,7 +135,7 @@ These are n8n workflow exports, not a standalone application. To run them:
    - `redis-main` (Redis, for agent memory and WhatsApp dedup)
 3. Replace the placeholder hosts (`your-ocs-server.example.com`, `your-zabbix-server.example.com`, `your-crm.example.com`, `your-report-server.example.com`) with your real endpoints.
 4. Replace `CHANGE_ME_CALLBACK_SECRET` and `CHANGE_ME_USER:CHANGE_ME_PASSWORD` with real values, ideally moved into n8n credentials rather than left inline.
-5. Provision the referenced Postgres schema (`cache_ocs_computers`, `cache_eset_devices`, `cache_inventario`, `cache_tickets`, etc.) — a schema migration is not included in this repo.
+5. Provision the referenced Postgres schema (`cache_ocs_computers`, `cache_eset_devices`, `cache_inventario`, `cache_tickets`, etc). A schema migration is not included in this repo.
 6. Once credentials and endpoints are in place, activate each workflow manually from the n8n UI.
 
 There's no `.env.example` here on purpose: these are n8n workflow exports, not application code reading `process.env`. Every secret (DB connection, API tokens, callback secret) lives in n8n's own credential store, referenced by name from each node.
